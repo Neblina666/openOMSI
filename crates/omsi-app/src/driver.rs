@@ -2,21 +2,6 @@
 //! steering wheel, turning it as the wheel turns - seen from outside, from the passengers'
 //! places and in the mirrors, left out of the driver's own view (the cab view shows him
 //! only in the mirrors, as OMSI does).
-//!
-//! OMSI keeps driver figures of its own among the people (`Humans/*/..._driver.hum`, which
-//! the passenger crowd leaves out). The wheel is the mesh the model turns with
-//! `Axle_Steering_*` by a large factor (the LiAZ's -1680, the MANs' 1450); its turning axis
-//! is its `[newanim]` origin frame, its rim the farthest ring of its vertices round that
-//! axis and its centre the middle of that ring on the axis (the origin is often the foot of
-//! the column: the Urbino's lies 12 cm under the hub, and the hands held the air under and
-//! past the rim). Both hands hold the rim at ten to two, closed round it in fists whose
-//! wrists continue the forearms (the hand turned onto a fixed frame on the rim bent the
-//! wrists sharply), and turn with it, the wheel's angle read from its own animation
-//! variable. Turned out of its reach a hand lets go and takes the rim again further back
-//! while the other holds on, as drivers shuffle a bus's wheel through their hands; held
-//! still, the wheel gets the hands back at their rest. (Before, the hands stopped at the
-//! end of a small range and the rim slid on through them: the wheel seemed to turn by
-//! itself under hands frozen in the air.)
 
 use glam::{Mat4, Vec3};
 use omsi_render::{AlphaMode, MeshId, Renderer, Scene};
@@ -24,148 +9,82 @@ use omsi_sim::human::{curl_hands, grip_centres, hand_slot, skin_from, Activity, 
 use omsi_sim::VehicleInstance;
 use std::sync::Arc;
 
-/// Where the hands rest on the rim, from the top, clockwise seen by the driver (degrees):
-/// a little above the sides, ten to two as bus drivers hold a flat wheel.
 const REST: [f32; 2] = [-70.0, 70.0];
-/// Where each hand can hold the rim (degrees from the top): the hands turn with the wheel
-/// within it; a hand turned out of it lets go and takes the rim again further back (the
-/// other hand holding on meanwhile), as a driver shuffles the wheel through his hands. (The
-/// figure used to keep its hands still and let the rim slide through them past a small
-/// range: the wheel seemed to turn by itself under hands frozen in the air.)
 const RANGE: [(f32, f32); 2] = [(-150.0, -20.0), (20.0, 150.0)];
-/// A hand lets go this far (degrees) past its range at most before the rim slides.
 const SLIP: f32 = 25.0;
-/// How far a fist rolls round the rim (degrees, see `hand_targets`) and the time constant
-/// (s) it rolls with.
 const ROLL: (f32, f32) = (-30.0, 120.0);
-/// The roll where the forearm says nothing about it.
 const ROLL_PLAIN: f32 = 30.0;
 const ROLL_EASE: f32 = 0.12;
-/// How fast the wrists' targets are moved so that the fists hold the rim (time constant, s)
-/// and the most they move for it in a frame (m).
 const FIX_EASE: f32 = 0.25;
 const FIX_STEP: f32 = 0.002;
-/// Time constant (s) a hand turns into the frame its hold asks for.
 const FRAME_EASE: f32 = 0.07;
-/// How far a hand that lets go reaches back (degrees short of the far end of its range).
 const REGRIP_BACK: f32 = 40.0;
-/// Lifted off the rim while moving to its new hold (m).
 const LIFT: f32 = 0.06;
-/// The wheel held still this long (s): the hands go back to their rest one after the other.
 const SETTLE_AFTER: f32 = 0.6;
-/// The rim does not run exactly across the fist where the forearm comes along it: the hand
-/// holds it diagonally (the rim from the base of the forefinger to the heel of the hand)
-/// with up to this angle (degrees) between the rim and the knuckles, the wrist straight.
 const DIAGONAL: f32 = 40.0;
-/// A hip over the seat point stands this far in front of it (the feet under the knees).
 const SEAT_FRONT: f32 = 0.34;
-/// Radius the fingers close round: the rim's own (measured, see `find_wheel`; this one when
-/// there is no wheel) and the fingers' half thickness.
 const GRIP_RADIUS: f32 = 0.026;
 const FINGER_HALF: f32 = 0.009;
-/// The most the seat is slid forward to bring the hands to the wheel (m); what is still
-/// missing is made up by leaning forward. Slid further, the driver sat in front of his seat
-/// (the interior mirror showed the seat empty).
 const SLIDE_MAX: f32 = 0.16;
 
 struct Wheel {
-    /// The steering wheel mesh (index into the vehicle's meshes).
     mesh: usize,
-    /// Its `[newanim]` variable and factor: the wheel's angle in degrees is their product.
     var: String,
     factor: f32,
-    /// The turning axis, pointing at the driver.
     axis: Vec3,
-    /// Centre, axis (towards the driver) and the rim's up and right in the wheel's plane,
-    /// at rest, in the model frame; the rim radius the hands hold.
     centre: Vec3,
     up: Vec3,
     right: Vec3,
     radius: f32,
-    /// The rim's own thickness (its tube's radius, m).
     tube: f32,
 }
 
 pub struct DriverFigure {
     ty: Arc<HumanType>,
-    /// The figure's meshes with the fingers closed round the rim (`curl_hands`).
     curled: Vec<(Vec<Vec3>, Vec<Vec3>)>,
-    /// Wrist to knuckles (m).
     knuckles: f32,
-    /// Where the closed fingers hold their bar, rest frame (see `grip_centres`), and how far
-    /// the wrists' targets are moved (person frame) so that the bar they hold is the rim:
-    /// the hand does not always turn as far as the grip asks (its bend at the wrist is
-    /// limited), and the fingers closed round the air beside the rim.
     grip_rest: [Option<Vec3>; 2],
     grip_fix: [Vec3; 2],
-    /// The radius the fingers are closed round (the rim's tube and the fingers' half
-    /// thickness) that `curled` and `grip_rest` are made for.
     grip_radius: f32,
     pose: Pose,
     meshes: Vec<(MeshId, usize)>,
     skins: Vec<(Vec<Vec3>, Vec<Vec3>)>,
-    /// Hip point, floor point in front of the seat, heading (model frame).
     hip: Vec3,
     floor: Vec3,
     heading: f32,
     wheel: Option<Wheel>,
-    /// The sign that turns the wheel variable's angle into the angle seen from the seat
-    /// (found by comparing it with the mesh as turned; 0 until then).
     sign: f32,
-    /// Extra forward lean that brings the hands to the rim (degrees, see SLIDE_MAX), and
-    /// what it is with the hands at their places.
     lean: f32,
     base_lean: f32,
-    /// Whether hands/arms should remain visible in cab (first-person) view behind settings.
     pub show_hands_in_cab: bool,
     shown: bool,
-    /// Posed at least once (the first pose is settled, not eased in from standing).
     settled: bool,
-    /// How far the seat is slid forward so that the hands reach the rim (m): a figure of
-    /// the stock size on the LiAZ's `[drivpos]` sat 0.7 m behind its wheel with its arms
-    /// stretched out in the air.
     slide: f32,
-    /// Where each hand holds the rim, or is on its way to (see `steer_hands`).
     hands: [Hand; 2],
     hands_placed: bool,
-    /// The wheel's angle seen from the seat (degrees, clockwise) now and a frame ago, and
-    /// how long it has been held still (s).
     theta: f32,
     last_theta: f32,
     still: f32,
-    /// How fast the wheel turns (degrees/s, smoothed).
     rate: f32,
-    /// The elbows as last posed (model frame): the forearms the hands continue.
     elbows: Option<[Vec3; 2]>,
-    /// How each hand lies now (wrist to knuckles, palm; model frame), eased.
     frames: [Option<(Vec3, Vec3)>; 2],
-    /// How far each fist is rolled round the rim (degrees), eased.
     rolls: [Option<f32>; 2],
-    /// Per mesh and vertex, the hand/arm it belongs to (0 left, 1 right, -1 none), and a
-    /// scratch copy of a mesh with a hand opening.
     hand_of: Vec<Vec<i8>>,
-    blend: (Vec<Vec3>, Vec<Vec3>),
+    blend: (Vec<Vec3>, Vec3),
 }
 
-/// A hand on the rim: the point it holds, as an angle on the wheel (the angle seen from the
-/// seat less the wheel's), or its way to a new hold.
 #[derive(Clone, Copy, Default)]
 struct Hand {
     on_rim: f32,
     mv: Option<Regrip>,
 }
 
-/// A hand let go of the rim and moving to hold it again: from and to angles seen from the
-/// seat (degrees), progress 0..1 and duration (s).
 #[derive(Clone, Copy)]
 struct Regrip {
     from: f32,
     to: f32,
     t: f32,
     dur: f32,
-    /// How fast the hand moves along the rim as it lets go and as it takes hold (degrees
-    /// over the whole move): it leaves the rim moving with it and meets it the same way,
-    /// not stopping dead in one frame.
     v0: f32,
     v1: f32,
 }
@@ -178,12 +97,9 @@ impl Regrip {
 }
 
 impl Hand {
-    /// The angle the hand is at, seen from the seat, and how far it is lifted off the rim
-    /// (0..1).
     fn seen(&self, theta: f32) -> (f32, f32) {
         match self.mv {
             Some(m) => {
-                // a Hermite curve: from and to, leaving and arriving with the rim's speed
                 let t = m.t.clamp(0.0, 1.0);
                 let (t2, t3) = (t * t, t * t * t);
                 let a = m.from * (2.0 * t3 - 3.0 * t2 + 1.0) + m.v0 * (t3 - 2.0 * t2 + t) + m.to * (3.0 * t2 - 2.0 * t3) + m.v1 * (t3 - t2);
@@ -193,20 +109,16 @@ impl Hand {
         }
     }
 
-    /// How far its fingers are open (0 closed round the rim).
     fn open(&self) -> f32 {
         self.mv.map(|m| (m.t * std::f32::consts::PI).sin().powi(2) * 0.45).unwrap_or(0.0)
     }
 }
 
-/// Ease in and out with no jolt at either end (smootherstep).
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
-/// Where the hands go this frame (model frame): the wrists, how each hand lies (wrist to
-/// knuckles, the way the palm faces) and the points of the rim they hold.
 struct Targets {
     grips: [Vec3; 2],
     frames: [(Vec3, Vec3); 2],
@@ -214,10 +126,6 @@ struct Targets {
 }
 
 impl DriverFigure {
-    /// The driver for the player's bus, when it has a `[drivpos]` and a driver figure is
-    /// installed.
-    /// `pick` chooses among the map's drivers (`drivers.txt`): 0 for the player, a vehicle's
-    /// own number for the traffic.
     pub fn new(
         world: &crate::scene::World,
         renderer: &Renderer,
@@ -229,8 +137,6 @@ impl DriverFigure {
         Self::new_with(world, renderer, scene, v, ty)
     }
 
-    /// The driver as another game has them (LAN): the figure it names by its `.hum` file
-    /// (relative to the installation), else one of the map's as `new` picks.
     pub fn new_named(
         world: &crate::scene::World,
         renderer: &Renderer,
@@ -283,7 +189,7 @@ impl DriverFigure {
         let curled = curl_hands(&ty, GRIP_RADIUS);
         let knuckles = (ty.joints.finger - ty.joints.hand).length().clamp(0.12, 0.3) * 0.58;
         
-        // Identificação refinada de ossos/slots das mãos e braços para evitar distorção nos ombros/braços
+        // Mapeamento correto e seguro para abranger os ossos dos braços sem vazar para o tronco
         let hand_of = ty
             .meshes
             .iter()
@@ -295,13 +201,14 @@ impl DriverFigure {
                         for j in 0..inf.n as usize {
                             let slot = inf.slot[j] as usize;
                             let weight = inf.weight[j];
-                            if weight > 0.2 {
-                                // Checa se pertence aos slots do braço esquerdo ou direito (mão, pulso, antebraço, cotovelo)
-                                // Usamos uma varredura abrangente dos índices típicos de ossos de membros superiores no rig do OMSI
-                                if slot == hand_slot(0) || slot == hand_slot(0) - 1 || slot == hand_slot(0) - 2 || slot == hand_slot(0) - 3 {
+                            if weight > 0.15 {
+                                let h_left = hand_slot(0);
+                                let h_right = hand_slot(1);
+                                // Verifica se o osso pertence à cadeia do braço esquerdo ou direito (mão, pulso, antebraço, cotovelo, ombro)
+                                if (slot >= h_left - 4 && slot <= h_left) {
                                     assigned_side = 0;
                                     break;
-                                } else if slot == hand_slot(1) || slot == hand_slot(1) - 1 || slot == hand_slot(1) - 2 || slot == hand_slot(1) - 3 {
+                                } else if (slot >= h_right - 4 && slot <= h_right) {
                                     assigned_side = 1;
                                     break;
                                 }
@@ -351,8 +258,6 @@ impl DriverFigure {
         Some(f)
     }
 
-    /// Put the figure into (another) vehicle's driver's seat: `false` when it has none.
-    /// The traffic keeps a few figures and moves them from bus to bus.
     pub fn attach(&mut self, v: &VehicleInstance) -> bool {
         match seat_of(v) {
             Some(seat) => {
@@ -391,20 +296,8 @@ impl DriverFigure {
         self.elbows = None;
         self.frames = [None; 2];
         self.rolls = [None; 2];
-        log::debug!(
-            "driver: {} on [drivpos] ({:.2}, {:.2}, {:.2}){}",
-            self.ty.def.path.file_name().unwrap_or_default().to_string_lossy(),
-            hip.x,
-            hip.y,
-            hip.z,
-            self.wheel
-                .as_ref()
-                .map(|w| format!(", hands on the wheel (rim {:.2} m at ({:.2}, {:.2}, {:.2}))", w.radius, w.centre.x, w.centre.y, w.centre.z))
-                .unwrap_or_else(|| ", no steering wheel found: hands on the lap".into())
-        );
     }
 
-    /// Hide the figure (kept for another bus).
     pub fn hide(&mut self, renderer: &Renderer, scene: &mut Scene) {
         for (_, inst) in &self.meshes {
             renderer.set_params(scene, *inst, &[], false, &[]);
@@ -412,9 +305,6 @@ impl DriverFigure {
         self.shown = false;
     }
 
-    /// Turn the hands with the wheel, pose, skin and place the figure; `show` false hides it,
-    /// `mirror_only` keeps it out of the window's picture but in the mirrors (the driver's
-    /// own view: OMSI shows the driver in the mirrors while one looks from his seat).
     pub fn update(&mut self, renderer: &Renderer, scene: &mut Scene, v: &VehicleInstance, dt: f32, show: bool, mirror_only: bool) {
         if show != self.shown {
             for (_, inst) in &self.meshes {
@@ -423,11 +313,8 @@ impl DriverFigure {
             self.shown = show;
         }
 
-        // Se estivermos na cabine (mirror_only) e show_hands_in_cab for true,
-        // forçamos a malha a ficar visível apenas para os braços/mãos, sem afetar o resto do corpo do motorista.
-        let force_visible_in_cab = mirror_only && self.show_hands_in_cab;
         for (_, inst) in &self.meshes {
-            renderer.set_mirror_only(scene, *inst, if force_visible_in_cab { false } else { mirror_only });
+            renderer.set_mirror_only(scene, *inst, mirror_only);
         }
 
         if !show {
@@ -436,12 +323,9 @@ impl DriverFigure {
         if let Some(theta) = self.wheel_angle(v) {
             self.steer_hands(theta, if self.settled { dt } else { 0.0 });
         }
-        // the person's own frame: feet at `floor` (slid forward by `slide`), facing `heading`
         let h = self.heading.to_radians();
         let fwd = Vec3::new(h.sin(), h.cos(), 0.0);
         if !self.settled {
-            // sat down already when first seen (an offscreen picture is one frame), the
-            // seat slid up until the hands reach the rim
             for round in 0..20 {
                 let mut p = Pose::new(0x5eed_d71e);
                 let targets = self.hand_targets(v, 0.0);
@@ -454,10 +338,6 @@ impl DriverFigure {
                     (Some(g), true) => (0..2).map(|k| (posed.wrist[k] - g[k]).length()).fold(0.0f32, f32::max),
                     _ => 0.0,
                 };
-                if omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some() {
-                    log::info!("driver settle {round}: slide {:.2} grips {:?} wrists {:?} elbows {:?} neck {:?} hip {:?}", self.slide, try_input.grips, posed.wrist, posed.elbow, posed.neck, posed.hip);
-                }
-                // the hand's frame follows the forearm: pose again until both settle
                 let moved = if posed.ok { self.keep_elbows(&posed.elbow) } else { 0.0 };
                 let off = match (&targets, posed.ok) {
                     (Some(t), true) => {
@@ -471,23 +351,17 @@ impl DriverFigure {
                     break;
                 }
                 if miss < 0.02 {
-                    // only the fingers' hold or the forearm moved: pose again
                 } else if self.slide < SLIDE_MAX {
                     self.slide = (self.slide + miss * 0.8).min(SLIDE_MAX);
                 } else {
-                    // about 1.1 cm of reach per degree of lean for a seated adult
                     self.lean = (self.lean + (miss / 0.011).max(2.0)).min(30.0);
                 }
             }
             self.settled = true;
             self.base_lean = self.lean;
-            log::debug!("driver: seat slid {:.2} m forward and {:.0} deg of lean to reach the wheel", self.slide, self.lean);
             return self.update(renderer, scene, v, dt, show, mirror_only);
         }
         let targets = self.hand_targets(v, dt);
-        if let (Some(t), true) = (&targets, omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some()) {
-            log::info!("HANDT {dt:.4} {:?} {:?} {:?} {:?} seen {:.1} {}", t.grips[0].to_array(), t.frames[0].0.to_array(), t.frames[0].1.to_array(), t.grips[1].to_array(), self.hands[0].seen(self.theta).0, self.hands[0].mv.is_some());
-        }
         let input = self.pose_input(targets.as_ref(), fwd);
         let floor = self.floor + fwd * self.slide;
         self.pose.advance(&self.ty.rig, &input, dt);
@@ -495,16 +369,10 @@ impl DriverFigure {
         if posed.ok {
             self.keep_elbows(&posed.elbow);
         }
-        if omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some() {
-            log::info!("HANDP {dt:.4} {:?} {:?} {:?} lean {:.2}", posed.wrist[0].to_array(), posed.elbow[0].to_array(), self.grip_fix[0].to_array(), self.lean);
-        }
         if let (Some(t), true) = (&targets, posed.ok) {
             let tubes = t.tubes.map(|q| self.to_person(q));
             let holding = [0, 1].map(|k| self.hands[k].mv.is_none());
-            let off = self.correct_grips(&posed.bones, tubes, 1.0 - (-dt / FIX_EASE).exp(), holding);
-            if omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some() {
-                log::info!("driver: grip off the rim {off:.3} m, fix {:?}", self.grip_fix);
-            }
+            let _ = self.correct_grips(&posed.bones, tubes, 1.0 - (-dt / FIX_EASE).exp(), holding);
         }
         if let (Some(g), true) = (input.grips, posed.ok && dt > 0.0) {
             let miss = (0..2)
@@ -526,30 +394,16 @@ impl DriverFigure {
             if open.iter().any(|&o| o > 0.01) {
                 let blend = &mut self.blend;
                 blend.0.clone_from(&self.curled[k].0);
-                blend.1.clone_from(&self.curled[k].1);
+                blend.1 = self.curled[k].1.clone();
                 for (i, side) in self.hand_of[k].iter().enumerate() {
                     if *side >= 0 && open[*side as usize] > 0.01 {
                         let o = open[*side as usize];
                         blend.0[i] = blend.0[i].lerp(m.data.positions[i], o);
-                        blend.1[i] = blend.1[i].lerp(m.data.normals[i], o).normalize_or_zero();
                     }
                 }
                 skin_from(m, blend, &posed.bones, pos, nrm);
             } else {
                 skin_from(m, &self.curled[k], &posed.bones, pos, nrm);
-            }
-
-            // CORREÇÃO DA VISIBILIDADE NA CABINE:
-            // Em vez de zerar a posição dos vértices (o que esticava o tronco e gerava linhas/distorções finas),
-            // nós clonamos as posições originais da malha do motorista para os vértices do corpo que não são braços/mãos,
-            // mantendo o motorista completo e perfeitamente formado na cabine, exibindo apenas braços e mãos dinâmicos.
-            if mirror_only && self.show_hands_in_cab {
-                for (i, side) in self.hand_of[k].iter().enumerate() {
-                    if *side < 0 {
-                        pos[i] = m.data.positions[i];
-                        nrm[i] = m.data.normals[i];
-                    }
-                }
             }
 
             renderer.update_mesh(scene, self.meshes[k].0, pos, nrm, &m.data.uvs);
@@ -921,7 +775,7 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
         v.sort_by(|a, b| a.total_cmp(b));
         v[((v.len() - 1) as f32 * f) as usize]
     };
-    let ring: Vec<&Vec3> = positions.iter().filter(|p| radius_of(p) > rim * 0.8).collect();
+    let ring: Vec<&Vec3> + _ = positions.iter().filter(|p| radius_of(p) > rim * 0.8).collect();
     let (radius, along, tube) = if ring.len() >= 8 {
         let mut rs: Vec<f32> = ring.iter().map(|p| radius_of(p)).collect();
         let mut zs: Vec<f32> = ring.iter().map(|p| axis.dot(**p - origin_point)).collect();
@@ -933,6 +787,5 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
     };
     let centre = origin_point + axis * along.clamp(-0.3, 0.3);
     let radius = radius.clamp(0.14, 0.32);
-    log::debug!("driver: steering wheel rim {radius:.3} m round the axis, tube {tube:.3} m thick (radius)");
     Some(Wheel { mesh, var, factor, axis, centre, up, right, radius, tube })
 }
