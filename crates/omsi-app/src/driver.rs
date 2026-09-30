@@ -189,26 +189,24 @@ impl DriverFigure {
         let curled = curl_hands(&ty, GRIP_RADIUS);
         let knuckles = (ty.joints.finger - ty.joints.hand).length().clamp(0.12, 0.3) * 0.58;
         
-        // Mapeamento correto e seguro para abranger os ossos dos braços sem vazar para o tronco
-        let hand_of = ty
+        let hand_of: Vec<Vec<i8>> = ty
             .meshes
             .iter()
             .map(|m| {
                 m.skin
                     .iter()
                     .map(|inf| {
-                        let mut assigned_side = -1;
+                        let mut assigned_side: i8 = -1;
+                        let h_left = hand_slot(0);
+                        let h_right = hand_slot(1);
                         for j in 0..inf.n as usize {
                             let slot = inf.slot[j] as usize;
                             let weight = inf.weight[j];
                             if weight > 0.15 {
-                                let h_left = hand_slot(0);
-                                let h_right = hand_slot(1);
-                                // Verifica se o osso pertence à cadeia do braço esquerdo ou direito (mão, pulso, antebraço, cotovelo, ombro)
-                                if (slot >= h_left - 4 && slot <= h_left) {
+                                if slot >= h_left.saturating_sub(4) && slot <= h_left {
                                     assigned_side = 0;
                                     break;
-                                } else if (slot >= h_right - 4 && slot <= h_right) {
+                                } else if slot >= h_right.saturating_sub(4) && slot <= h_right {
                                     assigned_side = 1;
                                     break;
                                 }
@@ -216,9 +214,9 @@ impl DriverFigure {
                         }
                         assigned_side
                     })
-                    .collect()
+                    .collect::<Vec<i8>>()
             })
-            .collect();
+            .collect::<Vec<Vec<i8>>>();
 
         let grip_rest = grip_centres(&ty, GRIP_RADIUS);
         let mut f = DriverFigure {
@@ -396,9 +394,12 @@ impl DriverFigure {
                 blend.0.clone_from(&self.curled[k].0);
                 blend.1 = self.curled[k].1.clone();
                 for (i, side) in self.hand_of[k].iter().enumerate() {
-                    if *side >= 0 && open[*side as usize] > 0.01 {
-                        let o = open[*side as usize];
-                        blend.0[i] = blend.0[i].lerp(m.data.positions[i], o);
+                    if *side >= 0 {
+                        let s_idx = *side as usize;
+                        if open[s_idx] > 0.01 {
+                            let o = open[s_idx];
+                            blend.0[i] = blend.0[i].lerp(m.data.positions[i], o);
+                        }
                     }
                 }
                 skin_from(m, blend, &posed.bones, pos, nrm);
@@ -754,7 +755,7 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
     let right = up.cross(axis).normalize_or_zero();
     let right = if right.x < 0.0 { -right } else { right };
     let vm = &v.ty.meshes[mesh];
-    let loaded;
+    let loaded: Vec<Vec3>;
     let positions: &[Vec3] = if vm.data.positions.len() >= 12 {
         &vm.data.positions
     } else {
@@ -764,18 +765,18 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
             .unwrap_or_default();
         &loaded
     };
-    let radius_of = |p: &Vec3| {
+    let radius_of = |p: &Vec3| -> f32 {
         let d = *p - centre;
         (d - axis * axis.dot(d)).length()
     };
     let mut radii: Vec<f32> = positions.iter().map(radius_of).collect();
     radii.sort_by(|a, b| a.total_cmp(b));
     let rim = if radii.len() < 12 { 0.26 } else { radii[(radii.len() as f32 * 0.93) as usize] };
-    let pct = |v: &mut Vec<f32>, f: f32| {
+    let pct = |v: &mut Vec<f32>, f: f32| -> f32 {
         v.sort_by(|a, b| a.total_cmp(b));
         v[((v.len() - 1) as f32 * f) as usize]
     };
-    let ring: Vec<&Vec3> + _ = positions.iter().filter(|p| radius_of(p) > rim * 0.8).collect();
+    let ring: Vec<&Vec3> = positions.iter().filter(|p| radius_of(p) > rim * 0.8).collect();
     let (radius, along, tube) = if ring.len() >= 8 {
         let mut rs: Vec<f32> = ring.iter().map(|p| radius_of(p)).collect();
         let mut zs: Vec<f32> = ring.iter().map(|p| axis.dot(**p - origin_point)).collect();
