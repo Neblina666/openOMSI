@@ -155,6 +155,18 @@ pub struct DriverFigure {
 const UPPER_ARM_SLOT: [usize; 2] = [4, 5];
 const FORE_ARM_SLOT: [usize; 2] = [6, 7];
 
+/// How far from the posed arm (shoulder to elbow to wrist, m) a vertex still counts as the arm
+/// in the cab view: wide enough for a loose sleeve, short of the collar and the chest.
+const ARM_KEEP_RADIUS: f32 = 0.15;
+
+/// The distance from `p` to the segment `a`-`b`.
+fn dist_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    let t = if len2 > 1e-8 { ((p - a).dot(ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    (p - (a + ab * t)).length()
+}
+
 /// A hand on the rim: the point it holds, as an angle on the wheel (the angle seen from the
 /// seat less the wheel's), or its way to a new hold.
 #[derive(Clone, Copy, Default)]
@@ -586,59 +598,58 @@ impl DriverFigure {
             }
 
             // In the cab view only the hands and the arms show: every other vertex (torso, head,
-            // legs) is folded onto the nearer arm's anchor, so that the body's triangles shrink
-            // to nothing and those joining an arm close it at the shoulder. The anchor lies on
-            // the upper arm's axis (the middle of its vertices: that bone is straight, where a
-            // centre taken over the bent arm lies off it, in the air inside the elbow); an arm
-            // with no upper-arm vertices falls back on the middle of its hand's vertices.
-            // (Folded onto the figure's origin, the triangles stretched to the seat.)
+            // legs) is folded onto the nearer arm's anchor (just below the shoulder, on the upper
+            // arm's axis), so that the body's triangles shrink to nothing and those joining an
+            // arm close it at the shoulder. What counts as arm is decided twice over: by the
+            // weights (`hand_of`, `arm_of`) and by place - whatever lies within `ARM_KEEP_RADIUS`
+            // of the posed shoulder-elbow-wrist line. By the weights alone a sleeve whose cloth is
+            // weighted partly to the torso ended in a straight cut where the weights crossed a half,
+            // the rest of it folded away. (Folded onto the figure's origin, the triangles stretched
+            // to the seat.)
             if mirror_only && self.show_hands_in_cab {
                 let (hand_of, arm_of) = (&self.hand_of[k], &self.arm_of[k]);
                 let count = pos.len().min(hand_of.len()).min(arm_of.len());
-                let upper_w = |i: usize, side: usize| -> f32 {
-                    let inf = &m.skin[i];
-                    (0..inf.n.max(1) as usize)
-                        .filter(|&j| inf.slot[j] as usize == UPPER_ARM_SLOT[side])
-                        .map(|j| if inf.n <= 1 { 1.0 } else { inf.weight[j] })
-                        .sum()
-                };
-                let mut up_sum = [Vec3::ZERO; 2];
-                let mut up_n = [0.0f32; 2];
-                let mut hd_sum = [Vec3::ZERO; 2];
-                let mut hd_n = [0.0f32; 2];
-                for i in 0..count {
-                    for side in 0..2 {
-                        if arm_of[i] == side as i8 && upper_w(i, side) > 0.5 {
-                            up_sum[side] += pos[i];
-                            up_n[side] += 1.0;
-                        }
-                        if hand_of[i] == side as i8 {
-                            hd_sum[side] += pos[i];
-                            hd_n[side] += 1.0;
-                        }
-                    }
-                }
-                let anchors: Vec<Vec3> = (0..2)
-                    .filter_map(|h| {
-                        if up_n[h] > 0.0 {
-                            Some(up_sum[h] / up_n[h])
-                        } else if hd_n[h] > 0.0 {
-                            Some(hd_sum[h] / hd_n[h])
-                        } else {
-                            None
-                        }
+                // the arms as posed (person frame, like the skinned vertices): shoulder, elbow, wrist
+                let rig = &self.ty.rig;
+                let chain: Option<[[Vec3; 3]; 2]> = posed.ok.then(|| {
+                    [0, 1].map(|s| {
+                        let shoulder = Vec3::from(posed.bones[UPPER_ARM_SLOT[s]].transform_point3a(rig.shoulder[s].into()));
+                        [shoulder, posed.elbow[s], posed.wrist[s]]
                     })
-                    .collect();
+                });
+                let near_arm = |p: Vec3| -> bool {
+                    chain.is_some_and(|c| c.iter().any(|j| dist_to_segment(p, j[0], j[1]) < ARM_KEEP_RADIUS || dist_to_segment(p, j[1], j[2]) < ARM_KEEP_RADIUS))
+                };
+                let anchors: Vec<Vec3> = match chain {
+                    // a little way down the upper arm from the shoulder: inside the sleeve
+                    Some(c) => (0..2).map(|s| c[s][0].lerp(c[s][1], 0.3)).collect(),
+                    // (no pose to go by: the middle of each hand's vertices)
+                    None => {
+                        let mut sum = [Vec3::ZERO; 2];
+                        let mut n = [0.0f32; 2];
+                        for i in 0..count {
+                            if hand_of[i] >= 0 {
+                                sum[hand_of[i] as usize] += pos[i];
+                                n[hand_of[i] as usize] += 1.0;
+                            }
+                        }
+                        (0..2).filter(|&h| n[h] > 0.0).map(|h| sum[h] / n[h]).collect()
+                    }
+                };
                 let fold = anchors.first().copied().or_else(|| pos.first().copied()).unwrap_or(Vec3::ZERO);
                 for i in 0..count {
-                    if hand_of[i] < 0 && arm_of[i] < 0 {
-                        let here = pos[i];
-                        pos[i] = anchors
-                            .iter()
-                            .copied()
-                            .min_by(|a, b| a.distance_squared(here).total_cmp(&b.distance_squared(here)))
-                            .unwrap_or(fold);
+                    if hand_of[i] >= 0 || arm_of[i] >= 0 {
+                        continue;
                     }
+                    let here = pos[i];
+                    if near_arm(here) {
+                        continue;
+                    }
+                    pos[i] = anchors
+                        .iter()
+                        .copied()
+                        .min_by(|a, b| a.distance_squared(here).total_cmp(&b.distance_squared(here)))
+                        .unwrap_or(fold);
                 }
             }
 
