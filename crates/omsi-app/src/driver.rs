@@ -155,18 +155,6 @@ pub struct DriverFigure {
 const UPPER_ARM_SLOT: [usize; 2] = [4, 5];
 const FORE_ARM_SLOT: [usize; 2] = [6, 7];
 
-/// How far from the posed arm (shoulder to elbow to wrist, m) a vertex still counts as the arm
-/// in the cab view: wide enough for a loose sleeve, short of the collar and the chest.
-const ARM_KEEP_RADIUS: f32 = 0.15;
-
-/// The distance from `p` to the segment `a`-`b`.
-fn dist_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
-    let ab = b - a;
-    let len2 = ab.length_squared();
-    let t = if len2 > 1e-8 { ((p - a).dot(ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
-    (p - (a + ab * t)).length()
-}
-
 /// A hand on the rim: the point it holds, as an angle on the wheel (the angle seen from the
 /// seat less the wheel's), or its way to a new hold.
 #[derive(Clone, Copy, Default)]
@@ -203,7 +191,6 @@ impl Hand {
     fn seen(&self, theta: f32) -> (f32, f32) {
         match self.mv {
             Some(m) => {
-                // a Hermite curve: from and to, leaving and arriving with the rim's speed
                 let t = m.t.clamp(0.0, 1.0);
                 let (t2, t3) = (t * t, t * t * t);
                 let a = m.from * (2.0 * t3 - 3.0 * t2 + 1.0) + m.v0 * (t3 - 2.0 * t2 + t) + m.to * (3.0 * t2 - 2.0 * t3) + m.v1 * (t3 - t2);
@@ -215,20 +202,15 @@ impl Hand {
 
     /// How far its fingers are open (0 closed round the rim).
     fn open(&self) -> f32 {
-        // (progress kept within 0..1 like in `seen`: past the ends the sine opens the fingers
-        // again, a click as the hand lets go or takes hold)
         self.mv.map(|m| (m.t.clamp(0.0, 1.0) * std::f32::consts::PI).sin().powi(2) * 0.45).unwrap_or(0.0)
     }
 }
 
-/// Ease in and out with no jolt at either end (smootherstep).
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
-/// Where the hands go this frame (model frame): the wrists, how each hand lies (wrist to
-/// knuckles, the way the palm faces) and the points of the rim they hold.
 struct Targets {
     grips: [Vec3; 2],
     frames: [(Vec3, Vec3); 2],
@@ -236,10 +218,6 @@ struct Targets {
 }
 
 impl DriverFigure {
-    /// The driver for the player's bus, when it has a `[drivpos]` and a driver figure is
-    /// installed.
-    /// `pick` chooses among the map's drivers (`drivers.txt`): 0 for the player, a vehicle's
-    /// own number for the traffic.
     pub fn new(
         world: &crate::scene::World,
         renderer: &Renderer,
@@ -251,8 +229,6 @@ impl DriverFigure {
         Self::new_with(world, renderer, scene, v, ty)
     }
 
-    /// The driver as another game has them (LAN): the figure it names by its `.hum` file
-    /// (relative to the installation), else one of the map's as `new` picks.
     pub fn new_named(
         world: &crate::scene::World,
         renderer: &Renderer,
@@ -319,8 +295,6 @@ impl DriverFigure {
                     .collect()
             })
             .collect();
-        // (an arm vertex: most of its weight on that side's upper arm and forearm together, so
-        // the elbow's blended vertices count too)
         let arm_of: Vec<Vec<i8>> = ty
             .meshes
             .iter()
@@ -384,8 +358,6 @@ impl DriverFigure {
         Some(f)
     }
 
-    /// Put the figure into (another) vehicle's driver's seat: `false` when it has none.
-    /// The traffic keeps a few figures and moves them from bus to bus.
     pub fn attach(&mut self, v: &VehicleInstance) -> bool {
         match seat_of(v) {
             Some(seat) => {
@@ -437,7 +409,6 @@ impl DriverFigure {
         );
     }
 
-    /// Hide the figure (kept for another bus).
     pub fn hide(&mut self, renderer: &Renderer, scene: &mut Scene) {
         for (_, inst) in &self.meshes {
             renderer.set_params(scene, *inst, &[], false, &[]);
@@ -445,9 +416,6 @@ impl DriverFigure {
         self.shown = false;
     }
 
-    /// Turn the hands with the wheel, pose, skin and place the figure; `show` false hides it,
-    /// `mirror_only` keeps it out of the window's picture but in the mirrors (the driver's
-    /// own view: OMSI shows the driver in the mirrors while one looks from his seat).
     pub fn update(&mut self, renderer: &Renderer, scene: &mut Scene, v: &VehicleInstance, dt: f32, show: bool, mirror_only: bool) {
         if show != self.shown {
             for (_, inst) in &self.meshes {
@@ -456,8 +424,6 @@ impl DriverFigure {
             self.shown = show;
         }
 
-        // (in the cab with the hands shown: the figure is drawn in the window's picture too,
-        // with everything but the hands folded away, see the skinning below)
         let force_visible_in_cab = mirror_only && self.show_hands_in_cab;
         for (_, inst) in &self.meshes {
             renderer.set_mirror_only(scene, *inst, if force_visible_in_cab { false } else { mirror_only });
@@ -469,12 +435,9 @@ impl DriverFigure {
         if let Some(theta) = self.wheel_angle(v) {
             self.steer_hands(theta, if self.settled { dt } else { 0.0 });
         }
-        // the person's own frame: feet at `floor` (slid forward by `slide`), facing `heading`
         let h = self.heading.to_radians();
         let fwd = Vec3::new(h.sin(), h.cos(), 0.0);
         if !self.settled {
-            // sat down already when first seen (an offscreen picture is one frame), the
-            // seat slid up until the hands reach the rim
             for round in 0..20 {
                 let mut p = Pose::new(0x5eed_d71e);
                 let targets = self.hand_targets(v, 0.0);
@@ -487,10 +450,6 @@ impl DriverFigure {
                     (Some(g), true) => (0..2).map(|k| (posed.wrist[k] - g[k]).length()).fold(0.0f32, f32::max),
                     _ => 0.0,
                 };
-                if omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some() {
-                    log::info!("driver settle {round}: slide {:.2} grips {:?} wrists {:?} elbows {:?} neck {:?} hip {:?}", self.slide, try_input.grips, posed.wrist, posed.elbow, posed.neck, posed.hip);
-                }
-                // the hand's frame follows the forearm: pose again until both settle
                 let moved = if posed.ok { self.keep_elbows(&posed.elbow) } else { 0.0 };
                 let off = match (&targets, posed.ok) {
                     (Some(t), true) => {
@@ -504,25 +463,16 @@ impl DriverFigure {
                     break;
                 }
                 if miss < 0.02 {
-                    // only the fingers' hold or the forearm moved: pose again
                 } else if self.slide < SLIDE_MAX {
                     self.slide = (self.slide + miss * 0.8).min(SLIDE_MAX);
                 } else {
-                    // about 1.1 cm of reach per degree of lean for a seated adult
                     self.lean = (self.lean + (miss / 0.011).max(2.0)).min(30.0);
                 }
             }
             self.settled = true;
             self.base_lean = self.lean;
-            log::debug!("driver: seat slid {:.2} m forward and {:.0} deg of lean to reach the wheel", self.slide, self.lean);
-            // (no second `update` from here: it ran `steer_hands` again in the same frame, a
-            // second step of the angular rate and of the regrip timers; this frame goes on
-            // below with the settled pose and is drawn like any other)
         }
         let targets = self.hand_targets(v, dt);
-        if let (Some(t), true) = (&targets, omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some()) {
-            log::info!("HANDT {dt:.4} {:?} {:?} {:?} {:?} seen {:.1} {}", t.grips[0].to_array(), t.frames[0].0.to_array(), t.frames[0].1.to_array(), t.grips[1].to_array(), self.hands[0].seen(self.theta).0, self.hands[0].mv.is_some());
-        }
         let input = self.pose_input(targets.as_ref(), fwd);
         let floor = self.floor + fwd * self.slide;
         self.pose.advance(&self.ty.rig, &input, dt);
@@ -530,21 +480,11 @@ impl DriverFigure {
         if posed.ok {
             self.keep_elbows(&posed.elbow);
         }
-        if omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some() {
-            log::info!("HANDP {dt:.4} {:?} {:?} {:?} lean {:.2}", posed.wrist[0].to_array(), posed.elbow[0].to_array(), self.grip_fix[0].to_array(), self.lean);
-        }
         if let (Some(t), true) = (&targets, posed.ok) {
-            // (drawn this frame as posed; the next frame holds the rim) - a hand on its way
-            // to a new hold keeps the correction it had
             let tubes = t.tubes.map(|q| self.to_person(q));
             let holding = [0, 1].map(|k| self.hands[k].mv.is_none());
-            let off = self.correct_grips(&posed.bones, tubes, 1.0 - (-dt / FIX_EASE).exp(), holding);
-            if omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some() {
-                log::info!("driver: grip off the rim {off:.3} m, fix {:?}", self.grip_fix);
-            }
+            self.correct_grips(&posed.bones, tubes, 1.0 - (-dt / FIX_EASE).exp(), holding);
         }
-        // a hold the arms do not quite reach (the top of a tilted wheel is further off than
-        // its sides): lean towards it, and back again when the hands are nearer
         if let (Some(g), true) = (input.grips, posed.ok && dt > 0.0) {
             let miss = (0..2)
                 .map(|k| (posed.wrist[k] - g[k]).length())
@@ -555,33 +495,14 @@ impl DriverFigure {
                 self.lean = (self.lean - 4.0 * dt).max(self.base_lean);
             }
         }
-        if omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some() {
-            if let Some(g) = input.grips {
-                log::info!(
-                    "driver: wheel {:.0} deg (sign {}), hands at {:.0} {:.0}{}{}, lean {:.1}, miss {:.3} {:.3}",
-                    self.theta,
-                    self.sign,
-                    self.hands[0].seen(self.theta).0,
-                    self.hands[1].seen(self.theta).0,
-                    if self.hands[0].mv.is_some() { " (left regrips)" } else { "" },
-                    if self.hands[1].mv.is_some() { " (right regrips)" } else { "" },
-                    self.lean,
-                    (posed.wrist[0] - g[0]).length(),
-                    (posed.wrist[1] - g[1]).length()
-                );
-            }
-        }
         if !posed.ok && !self.skins.is_empty() {
             return;
         }
         self.skins.resize_with(self.ty.meshes.len(), Default::default);
-        // (a blend from the first sliver of opening: with a threshold the fingers jumped by
-        // that sliver as the hand let go and as it took hold; at 0 the blend is `curled`)
         let open = [0, 1].map(|k| self.hands[k].open());
         for (k, m) in self.ty.meshes.iter().enumerate() {
             let (pos, nrm) = &mut self.skins[k];
             if open.iter().any(|&o| o > 0.0) {
-                // a hand on its way to a new hold opens its fingers
                 let blend = &mut self.blend;
                 blend.0.clone_from(&self.curled[k].0);
                 blend.1.clone_from(&self.curled[k].1);
@@ -597,59 +518,53 @@ impl DriverFigure {
                 skin_from(m, &self.curled[k], &posed.bones, pos, nrm);
             }
 
-            // In the cab view only the hands and the arms show: every other vertex (torso, head,
-            // legs) is folded onto the nearer arm's anchor (just below the shoulder, on the upper
-            // arm's axis), so that the body's triangles shrink to nothing and those joining an
-            // arm close it at the shoulder. What counts as arm is decided twice over: by the
-            // weights (`hand_of`, `arm_of`) and by place - whatever lies within `ARM_KEEP_RADIUS`
-            // of the posed shoulder-elbow-wrist line. By the weights alone a sleeve whose cloth is
-            // weighted partly to the torso ended in a straight cut where the weights crossed a half,
-            // the rest of it folded away. (Folded onto the figure's origin, the triangles stretched
-            // to the seat.)
             if mirror_only && self.show_hands_in_cab {
                 let (hand_of, arm_of) = (&self.hand_of[k], &self.arm_of[k]);
                 let count = pos.len().min(hand_of.len()).min(arm_of.len());
-                // the arms as posed (person frame, like the skinned vertices): shoulder, elbow, wrist
-                let rig = &self.ty.rig;
-                let chain: Option<[[Vec3; 3]; 2]> = posed.ok.then(|| {
-                    [0, 1].map(|s| {
-                        let shoulder = Vec3::from(posed.bones[UPPER_ARM_SLOT[s]].transform_point3a(rig.shoulder[s].into()));
-                        [shoulder, posed.elbow[s], posed.wrist[s]]
-                    })
-                });
-                let near_arm = |p: Vec3| -> bool {
-                    chain.is_some_and(|c| c.iter().any(|j| dist_to_segment(p, j[0], j[1]) < ARM_KEEP_RADIUS || dist_to_segment(p, j[1], j[2]) < ARM_KEEP_RADIUS))
+                let upper_w = |i: usize, side: usize| -> f32 {
+                    let inf = &m.skin[i];
+                    (0..inf.n.max(1) as usize)
+                        .filter(|&j| inf.slot[j] as usize == UPPER_ARM_SLOT[side])
+                        .map(|j| if inf.n <= 1 { 1.0 } else { inf.weight[j] })
+                        .sum()
                 };
-                let anchors: Vec<Vec3> = match chain {
-                    // a little way down the upper arm from the shoulder: inside the sleeve
-                    Some(c) => (0..2).map(|s| c[s][0].lerp(c[s][1], 0.3)).collect(),
-                    // (no pose to go by: the middle of each hand's vertices)
-                    None => {
-                        let mut sum = [Vec3::ZERO; 2];
-                        let mut n = [0.0f32; 2];
-                        for i in 0..count {
-                            if hand_of[i] >= 0 {
-                                sum[hand_of[i] as usize] += pos[i];
-                                n[hand_of[i] as usize] += 1.0;
-                            }
+                let mut up_sum = [Vec3::ZERO; 2];
+                let mut up_n = [0.0f32; 2];
+                let mut hd_sum = [Vec3::ZERO; 2];
+                let mut hd_n = [0.0f32; 2];
+                for i in 0..count {
+                    for side in 0..2 {
+                        if arm_of[i] == side as i8 && upper_w(i, side) > 0.5 {
+                            up_sum[side] += pos[i];
+                            up_n[side] += 1.0;
                         }
-                        (0..2).filter(|&h| n[h] > 0.0).map(|h| sum[h] / n[h]).collect()
+                        if hand_of[i] == side as i8 {
+                            hd_sum[side] += pos[i];
+                            hd_n[side] += 1.0;
+                        }
                     }
-                };
+                }
+                let anchors: Vec<Vec3> = (0..2)
+                    .filter_map(|h| {
+                        if up_n[h] > 0.0 {
+                            Some(up_sum[h] / up_n[h])
+                        } else if hd_n[h] > 0.0 {
+                            Some(hd_sum[h] / hd_n[h])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 let fold = anchors.first().copied().or_else(|| pos.first().copied()).unwrap_or(Vec3::ZERO);
                 for i in 0..count {
-                    if hand_of[i] >= 0 || arm_of[i] >= 0 {
-                        continue;
+                    if hand_of[i] < 0 && arm_of[i] < 0 {
+                        let here = pos[i];
+                        pos[i] = anchors
+                            .iter()
+                            .copied()
+                            .min_by(|a, b| a.distance_squared(here).total_cmp(&b.distance_squared(here)))
+                            .unwrap_or(fold);
                     }
-                    let here = pos[i];
-                    if near_arm(here) {
-                        continue;
-                    }
-                    pos[i] = anchors
-                        .iter()
-                        .copied()
-                        .min_by(|a, b| a.distance_squared(here).total_cmp(&b.distance_squared(here)))
-                        .unwrap_or(fold);
                 }
             }
 
@@ -658,10 +573,6 @@ impl DriverFigure {
         let body = v.body_rotation();
         let at = v.position + body.transform_point3(floor).as_dvec3();
         let xf = body * Mat4::from_rotation_z(-h);
-        // lit by the lamps near the seat as they are (the driver's lamp, the saloon lamps
-        // over the front door), not by the brightest lamp anywhere in the bus: taken as the
-        // saloon's strongest light at full strength the driver glowed evenly all night as
-        // soon as any circuit was on, twice as bright as the passengers (who get half)
         let interior = v.interior_light_at(self.hip + Vec3::new(0.0, 0.0, 0.55)) * 0.5;
         for (_, inst) in &self.meshes {
             renderer.set_transform(scene, *inst, at, xf);
@@ -671,15 +582,10 @@ impl DriverFigure {
 }
 
 impl DriverFigure {
-    /// The wheel's frame as it stands now (model frame): centre, axis towards the driver, up
-    /// and right in its plane. An adjustable column (the SD202's) tilts the whole wheel, and
-    /// holds reckoned in the resting frame put the fists beside the tilted rim.
     fn wheel_frame(w: &Wheel, v: &VehicleInstance) -> (Mat4, Vec3, Vec3, Vec3, Vec3) {
         let turn = v.mesh_transforms.get(w.mesh).copied().unwrap_or(Mat4::IDENTITY);
         let centre = turn.transform_point3(w.centre);
         let axis = turn.transform_vector3(w.axis).normalize_or(w.axis);
-        // (an axis nearly along Z leaves no 'up' in the plane: the wheel's own takes over
-        // there, not only for an exactly zero projection whose direction is noise)
         let flat = Vec3::Z - axis * axis.dot(Vec3::Z);
         let up = if flat.length_squared() < 1e-6 { w.up } else { flat.normalize() };
         let right = up.cross(axis).normalize_or(w.right);
@@ -687,9 +593,6 @@ impl DriverFigure {
         (turn, centre, axis, up, right)
     }
 
-    /// How far the wheel is turned, seen from the driver (degrees clockwise): from its
-    /// variable (all the turns of a lock to lock), its sign found from the mesh as turned now
-    /// (within one turn).
     fn wheel_angle(&mut self, v: &VehicleInstance) -> Option<f32> {
         let w = self.wheel.as_ref()?;
         let (turn, _, _, up, right) = Self::wheel_frame(w, v);
@@ -704,12 +607,7 @@ impl DriverFigure {
         Some(self.theta)
     }
 
-    /// Move the hands with the wheel turned to `theta`: each turns with the rim while it
-    /// stays within its range; one turned out of it lets go and takes the rim again further
-    /// back while the other holds on (the rim slides through a hand only while the other is
-    /// off it); held still a while, the wheel gets its hands back at their rest.
     fn steer_hands(&mut self, theta: f32, dt: f32) {
-        // OMSI_DRIVER_HANDS=<left>,<right>: both hands held at these angles (grip close-ups)
         if let Some(a) = omsi_cfg::env::var("OMSI_DRIVER_HANDS").ok().and_then(|s| {
             let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
             (v.len() == 2).then(|| [v[0], v[1]])
@@ -746,7 +644,6 @@ impl DriverFigure {
             }
         }
         let inside = |k: usize, a: f32| a >= RANGE[k].0 && a <= RANGE[k].1;
-        // the hand furthest out of its range goes first
         let mut order = [0usize, 1];
         let out_by = |h: &Hand, k: usize| {
             let a = h.on_rim + theta;
@@ -763,21 +660,14 @@ impl DriverFigure {
             if inside(k, a) {
                 continue;
             }
-            // (the other hand keeps hold meanwhile, sliding if it has to)
             if self.hands[1 - k].mv.is_none() {
-                // back against the turn, towards the other end of the range
                 let (lo, hi) = RANGE[k];
                 let to = if a > hi { lo + REGRIP_BACK } else { hi - REGRIP_BACK };
                 let to = if (to - REST[k]).abs() > 90.0 { REST[k] } else { to };
-                // (from where the hand is now: a hand that slid is already past the range)
                 let from = a;
-                // an unhurried reach back, only a little quicker the faster the wheel turns
-                // (at a tenth of a second a hand flew back to its hold)
                 let dur = (0.38 + (to - from).abs() / 350.0) / (1.0 + self.rate.abs() / 2000.0);
                 self.hands[k] = Hand { on_rim: self.hands[k].on_rim, mv: Some(Regrip::new(from, to, dur.max(0.32), self.rate)) };
             } else {
-                // the rim slides through the hand past its range: the hand goes on with it
-                // less and less over SLIP degrees (stopped dead at a limit, it jumped)
                 let (lo, hi) = RANGE[k];
                 let before = self.hands[k].on_rim + theta - turned;
                 let over = (lo - before).max(before - hi).max(0.0);
@@ -798,10 +688,6 @@ impl DriverFigure {
         }
     }
 
-    /// Where the wrists go and how the hands lie: each fist closed round the rim at the angle
-    /// its hand is at, the wrist continuing the forearm; a hand on its way to a new hold
-    /// lifted off the rim towards the driver.
-    /// `dt` eases each hand's frame towards the one its hold asks for (0 takes it at once).
     fn hand_targets(&mut self, v: &VehicleInstance, dt: f32) -> Option<Targets> {
         let w = self.wheel.as_ref()?;
         let (_, centre, axis, up, right) = Self::wheel_frame(w, v);
@@ -814,16 +700,8 @@ impl DriverFigure {
             let radial = (up * a.cos() + right * a.sin()).normalize_or(up);
             let along = (right * a.cos() - up * a.sin()).normalize_or(right);
             let tube = centre + radial * w.radius + (axis * 0.85 + radial * 0.3) * (LIFT * lift);
-            // the forearm: from the elbow as last posed, else from about where it will be
             let elbow = self.elbows.map(|e| e[k]).unwrap_or(self.hip + Vec3::Z * 0.2 - fwd * 0.05 + (tube - centre).with_z(0.0) * 0.5);
             let fore = (tube - elbow).normalize_or(fwd);
-            // How far the fist is rolled round the rim (0: the fingers out over the rim's
-            // outer edge, the palm on it from the driver's side; 90: the knuckles turned away
-            // from the driver, the palm towards the wheel's middle, as round an upright
-            // wheel's sides): as near the forearm's line as it goes, within what a wrist does.
-            // Where the forearm runs along the rim (the sides of a flat wheel) its line says
-            // nothing about the roll and the fist keeps to the plain grip over the outer edge
-            // (taken from the line alone, the palm flipped over there from frame to frame).
             let (e1, e2) = (radial, -axis);
             let proj = fore - along * along.dot(fore);
             let want = proj.dot(e2).atan2(proj.dot(e1)).to_degrees().clamp(ROLL.0, ROLL.1);
@@ -835,15 +713,9 @@ impl DriverFigure {
             self.rolls[k] = Some(roll);
             let (sr, cr) = roll.to_radians().sin_cos();
             let across = (e1 * cr + e2 * sr).normalize_or(e1);
-            // the rim held diagonally, the knuckles turned towards the forearm's line
             let dir = turn_towards(across, fore, DIAGONAL.to_radians());
-            // a right hand's thumb lies towards the top of the wheel on its right side, a
-            // left hand's likewise on its left: the fingers close round the rim the way that
-            // puts it there (the other way round was a mirrored hand, the thumb pointing down
-            // the rim and the fingers held in over the top)
             let palm = dir.cross(along).normalize_or(-axis);
             let palm = (palm - dir * dir.dot(palm)).normalize_or(palm);
-            // the hand turns into its new frame over a moment, not in one frame
             let (dir, palm) = match self.frames[k] {
                 Some((d0, p0)) if dt > 0.0 => {
                     let q0 = glam::Quat::from_mat3(&glam::Mat3::from_cols(d0, p0, d0.cross(p0))).normalize();
@@ -862,7 +734,6 @@ impl DriverFigure {
         Some(t)
     }
 
-    /// The pose input of the driver at the wheel (the grips in the person's frame).
     fn pose_input(&self, targets: Option<&Targets>, fwd: Vec3) -> PoseInput<'static> {
         let h = self.heading.to_radians();
         let turn_person = move |d: Vec3| Vec3::new(d.x * h.cos() - d.y * h.sin(), d.x * h.sin() + d.y * h.cos(), d.z);
@@ -882,8 +753,6 @@ impl DriverFigure {
         }
     }
 
-    /// A model-frame point in the person's frame (feet at the slid floor point, facing the
-    /// seat's heading), and back.
     fn to_person(&self, q: Vec3) -> Vec3 {
         let h = self.heading.to_radians();
         let d = q - (self.floor + Vec3::new(h.sin(), h.cos(), 0.0) * self.slide);
@@ -896,7 +765,6 @@ impl DriverFigure {
         floor + Vec3::new(d.x * h.cos() + d.y * h.sin(), -d.x * h.sin() + d.y * h.cos(), d.z)
     }
 
-    /// Keep the posed elbows (person frame) for the next hands' frames; how far they moved.
     fn keep_elbows(&mut self, posed: &[Vec3; 2]) -> f32 {
         let now = posed.map(|e| self.from_person(e));
         let moved = self.elbows.map(|e| (0..2).map(|k| (e[k] - now[k]).length()).fold(0.0, f32::max)).unwrap_or(1.0);
@@ -904,8 +772,6 @@ impl DriverFigure {
         moved
     }
 
-    /// Move the wrists' targets by `gain` of what separates the bar the posed fingers hold
-    /// from the rim (`tubes`, person frame); the largest distance left.
     fn correct_grips(&mut self, bones: &[glam::Affine3A], tubes: [Vec3; 2], gain: f32, which: [bool; 2]) -> f32 {
         let mut worst = 0.0f32;
         for k in (0..2).filter(|&k| which[k]) {
@@ -917,7 +783,6 @@ impl DriverFigure {
                 continue;
             }
             worst = worst.max(err.length());
-            // (a few millimetres a frame at most: a larger step read as the hand jumping)
             let step = err * gain;
             let step = if gain < 1.0 { step.clamp_length_max(FIX_STEP) } else { step };
             let fix = self.grip_fix[k] + step;
@@ -927,7 +792,6 @@ impl DriverFigure {
     }
 }
 
-/// The vehicle's first `[drivpos]` (its passenger cabin is read once per type).
 fn seat_of(v: &VehicleInstance) -> Option<omsi_vehicle::cabin::PassPos> {
     static SEATS: std::sync::Mutex<Option<std::collections::HashMap<std::path::PathBuf, Option<omsi_vehicle::cabin::PassPos>>>> =
         std::sync::Mutex::new(None);
@@ -946,7 +810,6 @@ fn seat_of(v: &VehicleInstance) -> Option<omsi_vehicle::cabin::PassPos> {
         .clone()
 }
 
-/// `a` turned towards `b` by `max` radians at most (both unit vectors).
 fn turn_towards(a: Vec3, b: Vec3, max: f32) -> Vec3 {
     let angle = a.angle_between(b);
     if angle <= max || !angle.is_finite() {
@@ -960,7 +823,6 @@ fn turn_towards(a: Vec3, b: Vec3, max: f32) -> Vec3 {
 }
 
 impl DriverFigure {
-    /// The figure at the wheel (the player's own when getting up).
     pub fn human_type(&self) -> Arc<HumanType> {
         self.ty.clone()
     }
@@ -970,10 +832,6 @@ fn wrap(a: f32) -> f32 {
     (a + 540.0).rem_euclid(360.0) - 180.0
 }
 
-/// The driver figure: one of the map's `drivers.txt` (the human files OMSI draws at the
-/// wheel of its buses - Spandau and Grundorf name `humans\\axyz\\man01.hum`; OMSI
-/// reads the list with the map, the original), chosen by `pick`; without the list OMSI's own
-/// driver figure `Humans/*/DBC_man04_driver.hum`. Each file is read once.
 fn driver_type(world: &crate::scene::World, pick: u64) -> Option<Arc<HumanType>> {
     let listed: Vec<std::path::PathBuf> = omsi_map::ailists::load_list(&world.map_dir.join("drivers.txt"))
         .iter()
@@ -1006,7 +864,6 @@ fn driver_type(world: &crate::scene::World, pick: u64) -> Option<Arc<HumanType>>
     cached_type(&path)
 }
 
-/// A driver figure's type, read once per file.
 pub fn cached_type(path: &std::path::Path) -> Option<Arc<HumanType>> {
     static TYPES: std::sync::Mutex<Option<std::collections::HashMap<std::path::PathBuf, Option<Arc<HumanType>>>>> =
         std::sync::Mutex::new(None);
@@ -1024,9 +881,6 @@ pub fn cached_type(path: &std::path::Path) -> Option<Arc<HumanType>> {
         .clone()
 }
 
-/// The steering wheel: the mesh turned by `Axle_Steering_*` with the largest factor (a
-/// road wheel turns by the steering angle itself, a steering wheel by 15-20 times it) that
-/// lies within arm's reach of the seat.
 fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
     let mut best: Option<(f32, usize, Mat4, String, f32)> = None;
     for (i, vm) in v.ty.meshes.iter().enumerate() {
@@ -1052,10 +906,6 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
     let origin_point = origin.transform_point3(Vec3::ZERO);
     let centre = origin_point;
     let mut axis = origin.transform_vector3(Vec3::X).normalize_or_zero();
-    // the axis points at the driver: at his shoulders, not his hips - a bus's wheel lies
-    // nearly flat at the height of the hips, whose direction then says nothing (the SD202's
-    // axis came out pointing down and the hands held the air under the rim); a wheel that
-    // lies anywhere near flat faces up
     let shoulders = hip + Vec3::Z * 0.5;
     if (axis.z.abs() > 0.4 && axis.z < 0.0) || (axis.z.abs() <= 0.4 && axis.dot(shoulders - centre) < 0.0) {
         axis = -axis;
@@ -1064,13 +914,8 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
     if up.length_squared() < 0.5 {
         up = (Vec3::Y - axis * axis.dot(Vec3::Y)).normalize_or_zero();
     }
-    // right as the driver sees it: facing the wheel along -axis
     let right = up.cross(axis).normalize_or_zero();
     let right = if right.x < 0.0 { -right } else { right };
-    // the rim: the ring the farthest vertices form round the axis (a spoke or the hub is
-    // nearer; a few stray vertices are left out). An AI copy of a bus keeps no vertices on
-    // the CPU: its wheel is read from the file (a guessed size left the AI drivers' hands
-    // floating over the rim).
     let vm = &v.ty.meshes[mesh];
     let loaded;
     let positions: &[Vec3] = if vm.data.positions.len() >= 12 {
@@ -1088,13 +933,7 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
     };
     let mut radii: Vec<f32> = positions.iter().map(radius_of).collect();
     radii.sort_by(|a, b| a.total_cmp(b));
-    // (an AI copy of a bus keeps no vertices on the CPU: a bus wheel's size then)
     let rim = if radii.len() < 12 { 0.26 } else { radii[(radii.len() as f32 * 0.93) as usize] };
-    // The rim's cross-section, from the ring of its vertices (a spoke or the hub is nearer
-    // the axis): the middle of the tube across and along the axis, and how thick it is. The
-    // animation's origin may be anywhere on the axis, the foot of the column as often as the
-    // hub; and a guessed tube - a fixed 93 % of the outer radius, 8 mm over the ring's mean
-    // height - put the fingers' fist 2-3 cm beside the SD202's rim, closed round the air.
     let pct = |v: &mut Vec<f32>, f: f32| {
         v.sort_by(|a, b| a.total_cmp(b));
         v[((v.len() - 1) as f32 * f) as usize]
