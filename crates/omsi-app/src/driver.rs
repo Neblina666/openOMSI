@@ -144,8 +144,16 @@ pub struct DriverFigure {
     /// Per mesh and vertex, the hand it belongs to (0 left, 1 right, -1 none), and a
     /// scratch copy of a mesh with a hand opening.
     hand_of: Vec<Vec<i8>>,
+    /// Per mesh and vertex, the arm (upper arm and forearm) it belongs to (0 left, 1 right,
+    /// -1 none): the arms stay in the cab view along with the hands.
+    arm_of: Vec<Vec<i8>>,
     blend: (Vec<Vec3>, Vec<Vec3>),
 }
+
+/// The upper-arm and forearm bone slots of each side (0 left, 1 right) in `Posed::bones`,
+/// numbered as in `omsi_sim::human` (thighs 0-1, shins 2-3, upper arms 4-5, forearms 6-7).
+const UPPER_ARM_SLOT: [usize; 2] = [4, 5];
+const FORE_ARM_SLOT: [usize; 2] = [6, 7];
 
 /// A hand on the rim: the point it holds, as an angle on the wheel (the angle seen from the
 /// seat less the wheel's), or its way to a new hold.
@@ -195,7 +203,9 @@ impl Hand {
 
     /// How far its fingers are open (0 closed round the rim).
     fn open(&self) -> f32 {
-        self.mv.map(|m| (m.t * std::f32::consts::PI).sin().powi(2) * 0.45).unwrap_or(0.0)
+        // (progress kept within 0..1 like in `seen`: past the ends the sine opens the fingers
+        // again, a click as the hand lets go or takes hold)
+        self.mv.map(|m| (m.t.clamp(0.0, 1.0) * std::f32::consts::PI).sin().powi(2) * 0.45).unwrap_or(0.0)
     }
 }
 
@@ -297,6 +307,32 @@ impl DriverFigure {
                     .collect()
             })
             .collect();
+        // (an arm vertex: most of its weight on that side's upper arm and forearm together, so
+        // the elbow's blended vertices count too)
+        let arm_of: Vec<Vec<i8>> = ty
+            .meshes
+            .iter()
+            .map(|m| {
+                m.skin
+                    .iter()
+                    .map(|inf| {
+                        (0..2)
+                            .find(|&side| {
+                                let w: f32 = (0..inf.n.max(1) as usize)
+                                    .filter(|&j| {
+                                        let s = inf.slot[j] as usize;
+                                        s == UPPER_ARM_SLOT[side] || s == FORE_ARM_SLOT[side]
+                                    })
+                                    .map(|j| if inf.n <= 1 { 1.0 } else { inf.weight[j] })
+                                    .sum();
+                                w > 0.5
+                            })
+                            .map(|side| side as i8)
+                            .unwrap_or(-1)
+                    })
+                    .collect()
+            })
+            .collect();
         let grip_rest = grip_centres(&ty, GRIP_RADIUS);
         let mut f = DriverFigure {
             ty,
@@ -329,6 +365,7 @@ impl DriverFigure {
             frames: [None; 2],
             rolls: [None; 2],
             hand_of,
+            arm_of,
             blend: Default::default(),
         };
         f.seat_in(v, seat);
@@ -466,7 +503,9 @@ impl DriverFigure {
             self.settled = true;
             self.base_lean = self.lean;
             log::debug!("driver: seat slid {:.2} m forward and {:.0} deg of lean to reach the wheel", self.slide, self.lean);
-            return self.update(renderer, scene, v, dt, show, mirror_only);
+            // (no second `update` from here: it ran `steer_hands` again in the same frame, a
+            // second step of the angular rate and of the regrip timers; this frame goes on
+            // below with the settled pose and is drawn like any other)
         }
         let targets = self.hand_targets(v, dt);
         if let (Some(t), true) = (&targets, omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some()) {
@@ -524,16 +563,18 @@ impl DriverFigure {
             return;
         }
         self.skins.resize_with(self.ty.meshes.len(), Default::default);
+        // (a blend from the first sliver of opening: with a threshold the fingers jumped by
+        // that sliver as the hand let go and as it took hold; at 0 the blend is `curled`)
         let open = [0, 1].map(|k| self.hands[k].open());
         for (k, m) in self.ty.meshes.iter().enumerate() {
             let (pos, nrm) = &mut self.skins[k];
-            if open.iter().any(|&o| o > 0.01) {
+            if open.iter().any(|&o| o > 0.0) {
                 // a hand on its way to a new hold opens its fingers
                 let blend = &mut self.blend;
                 blend.0.clone_from(&self.curled[k].0);
                 blend.1.clone_from(&self.curled[k].1);
                 for (i, side) in self.hand_of[k].iter().enumerate() {
-                    if *side >= 0 && open[*side as usize] > 0.01 {
+                    if *side >= 0 && open[*side as usize] > 0.0 {
                         let o = open[*side as usize];
                         blend.0[i] = blend.0[i].lerp(m.data.positions[i], o);
                         blend.1[i] = blend.1[i].lerp(m.data.normals[i], o).normalize_or_zero();
@@ -544,24 +585,59 @@ impl DriverFigure {
                 skin_from(m, &self.curled[k], &posed.bones, pos, nrm);
             }
 
-            // In the cab view only the hands show: every other vertex is folded onto the
-            // nearer wrist (the middle of that hand's vertices), so that the body's triangles
-            // shrink to nothing and those joining a hand close it at the wrist. (Folded onto
-            // the figure's origin, the triangles from the wrists stretched to the seat.)
+            // In the cab view only the hands and the arms show: every other vertex (torso, head,
+            // legs) is folded onto the nearer arm's anchor, so that the body's triangles shrink
+            // to nothing and those joining an arm close it at the shoulder. The anchor lies on
+            // the upper arm's axis (the middle of its vertices: that bone is straight, where a
+            // centre taken over the bent arm lies off it, in the air inside the elbow); an arm
+            // with no upper-arm vertices falls back on the middle of its hand's vertices.
+            // (Folded onto the figure's origin, the triangles stretched to the seat.)
             if mirror_only && self.show_hands_in_cab {
-                let mut sum = [Vec3::ZERO; 2];
-                let mut n = [0.0f32; 2];
-                for (i, side) in self.hand_of[k].iter().enumerate() {
-                    if *side >= 0 && i < pos.len() {
-                        sum[*side as usize] += pos[i];
-                        n[*side as usize] += 1.0;
+                let (hand_of, arm_of) = (&self.hand_of[k], &self.arm_of[k]);
+                let count = pos.len().min(hand_of.len()).min(arm_of.len());
+                let upper_w = |i: usize, side: usize| -> f32 {
+                    let inf = &m.skin[i];
+                    (0..inf.n.max(1) as usize)
+                        .filter(|&j| inf.slot[j] as usize == UPPER_ARM_SLOT[side])
+                        .map(|j| if inf.n <= 1 { 1.0 } else { inf.weight[j] })
+                        .sum()
+                };
+                let mut up_sum = [Vec3::ZERO; 2];
+                let mut up_n = [0.0f32; 2];
+                let mut hd_sum = [Vec3::ZERO; 2];
+                let mut hd_n = [0.0f32; 2];
+                for i in 0..count {
+                    for side in 0..2 {
+                        if arm_of[i] == side as i8 && upper_w(i, side) > 0.5 {
+                            up_sum[side] += pos[i];
+                            up_n[side] += 1.0;
+                        }
+                        if hand_of[i] == side as i8 {
+                            hd_sum[side] += pos[i];
+                            hd_n[side] += 1.0;
+                        }
                     }
                 }
-                let wrist: Vec<Vec3> = (0..2).filter(|h| n[*h] > 0.0).map(|h| sum[h] / n[h]).collect();
-                let fold = wrist.first().copied().or_else(|| pos.first().copied()).unwrap_or(Vec3::ZERO);
-                for (i, side) in self.hand_of[k].iter().enumerate() {
-                    if *side < 0 && i < pos.len() {
-                        pos[i] = wrist.iter().copied().min_by(|a, b| a.distance_squared(pos[i]).total_cmp(&b.distance_squared(pos[i]))).unwrap_or(fold);
+                let anchors: Vec<Vec3> = (0..2)
+                    .filter_map(|h| {
+                        if up_n[h] > 0.0 {
+                            Some(up_sum[h] / up_n[h])
+                        } else if hd_n[h] > 0.0 {
+                            Some(hd_sum[h] / hd_n[h])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let fold = anchors.first().copied().or_else(|| pos.first().copied()).unwrap_or(Vec3::ZERO);
+                for i in 0..count {
+                    if hand_of[i] < 0 && arm_of[i] < 0 {
+                        let here = pos[i];
+                        pos[i] = anchors
+                            .iter()
+                            .copied()
+                            .min_by(|a, b| a.distance_squared(here).total_cmp(&b.distance_squared(here)))
+                            .unwrap_or(fold);
                     }
                 }
             }
@@ -591,10 +667,10 @@ impl DriverFigure {
         let turn = v.mesh_transforms.get(w.mesh).copied().unwrap_or(Mat4::IDENTITY);
         let centre = turn.transform_point3(w.centre);
         let axis = turn.transform_vector3(w.axis).normalize_or(w.axis);
-        let mut up = (Vec3::Z - axis * axis.dot(Vec3::Z)).normalize_or_zero();
-        if up.length_squared() < 0.5 {
-            up = w.up;
-        }
+        // (an axis nearly along Z leaves no 'up' in the plane: the wheel's own takes over
+        // there, not only for an exactly zero projection whose direction is noise)
+        let flat = Vec3::Z - axis * axis.dot(Vec3::Z);
+        let up = if flat.length_squared() < 1e-6 { w.up } else { flat.normalize() };
         let right = up.cross(axis).normalize_or(w.right);
         let right = if right.dot(w.right) < 0.0 { -right } else { right };
         (turn, centre, axis, up, right)
@@ -652,7 +728,7 @@ impl DriverFigure {
         }
         for k in 0..2 {
             if let Some(m) = &mut self.hands[k].mv {
-                m.t += dt / m.dur;
+                m.t = (m.t + dt / m.dur).clamp(0.0, 1.0);
                 if m.t >= 1.0 {
                     self.hands[k] = Hand { on_rim: m.to - theta, mv: None };
                 }
@@ -759,8 +835,8 @@ impl DriverFigure {
             // the hand turns into its new frame over a moment, not in one frame
             let (dir, palm) = match self.frames[k] {
                 Some((d0, p0)) if dt > 0.0 => {
-                    let q0 = glam::Quat::from_mat3(&glam::Mat3::from_cols(d0, p0, d0.cross(p0)));
-                    let q1 = glam::Quat::from_mat3(&glam::Mat3::from_cols(dir, palm, dir.cross(palm)));
+                    let q0 = glam::Quat::from_mat3(&glam::Mat3::from_cols(d0, p0, d0.cross(p0))).normalize();
+                    let q1 = glam::Quat::from_mat3(&glam::Mat3::from_cols(dir, palm, dir.cross(palm))).normalize();
                     let q = q0.slerp(q1, 1.0 - (-dt / FRAME_EASE).exp()).normalize();
                     (q * Vec3::X, q * Vec3::Y)
                 }
@@ -826,6 +902,9 @@ impl DriverFigure {
             let Some(b) = bones.get(hand_slot(k)) else { continue };
             let held = Vec3::from(b.transform_point3a(rest.into()));
             let err = tubes[k] - held;
+            if !err.is_finite() {
+                continue;
+            }
             worst = worst.max(err.length());
             // (a few millimetres a frame at most: a larger step read as the hand jumping)
             let step = err * gain;
