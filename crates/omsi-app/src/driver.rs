@@ -86,7 +86,7 @@ struct Wheel {
     tube: f32,
 }
 
-pub(crate) struct DriverFigure {
+pub struct DriverFigure {
     ty: Arc<HumanType>,
     /// The figure's meshes with the fingers closed round the rim (`curl_hands`).
     curled: Vec<(Vec<Vec3>, Vec<Vec3>)>,
@@ -116,6 +116,8 @@ pub(crate) struct DriverFigure {
     /// what it is with the hands at their places.
     lean: f32,
     base_lean: f32,
+    /// Whether hands/arms should remain visible in cab (first-person) view behind settings.
+    pub show_hands_in_cab: bool,
     shown: bool,
     /// Posed at least once (the first pose is settled, not eased in from standing).
     settled: bool,
@@ -142,8 +144,16 @@ pub(crate) struct DriverFigure {
     /// Per mesh and vertex, the hand it belongs to (0 left, 1 right, -1 none), and a
     /// scratch copy of a mesh with a hand opening.
     hand_of: Vec<Vec<i8>>,
+    /// Per mesh and vertex, the arm (upper arm and forearm) it belongs to (0 left, 1 right,
+    /// -1 none): the arms stay in the cab view along with the hands.
+    arm_of: Vec<Vec<i8>>,
     blend: (Vec<Vec3>, Vec<Vec3>),
 }
+
+/// The upper-arm and forearm bone slots of each side (0 left, 1 right) in `Posed::bones`,
+/// numbered as in `omsi_sim::human` (thighs 0-1, shins 2-3, upper arms 4-5, forearms 6-7).
+const UPPER_ARM_SLOT: [usize; 2] = [4, 5];
+const FORE_ARM_SLOT: [usize; 2] = [6, 7];
 
 /// A hand on the rim: the point it holds, as an angle on the wheel (the angle seen from the
 /// seat less the wheel's), or its way to a new hold.
@@ -218,7 +228,7 @@ impl DriverFigure {
     /// installed.
     /// `pick` chooses among the map's drivers (`drivers.txt`): 0 for the player, a vehicle's
     /// own number for the traffic.
-    pub(crate) fn new(
+    pub fn new(
         world: &crate::scene::World,
         renderer: &Renderer,
         scene: &mut Scene,
@@ -231,7 +241,7 @@ impl DriverFigure {
 
     /// The driver as another game has them (LAN): the figure it names by its `.hum` file
     /// (relative to the installation), else one of the map's as `new` picks.
-    pub(crate) fn new_named(
+    pub fn new_named(
         world: &crate::scene::World,
         renderer: &Renderer,
         scene: &mut Scene,
@@ -297,6 +307,32 @@ impl DriverFigure {
                     .collect()
             })
             .collect();
+        // (an arm vertex: most of its weight on that side's upper arm and forearm together, so
+        // the elbow's blended vertices count too)
+        let arm_of: Vec<Vec<i8>> = ty
+            .meshes
+            .iter()
+            .map(|m| {
+                m.skin
+                    .iter()
+                    .map(|inf| {
+                        (0..2)
+                            .find(|&side| {
+                                let w: f32 = (0..inf.n.max(1) as usize)
+                                    .filter(|&j| {
+                                        let s = inf.slot[j] as usize;
+                                        s == UPPER_ARM_SLOT[side] || s == FORE_ARM_SLOT[side]
+                                    })
+                                    .map(|j| if inf.n <= 1 { 1.0 } else { inf.weight[j] })
+                                    .sum();
+                                w > 0.5
+                            })
+                            .map(|side| side as i8)
+                            .unwrap_or(-1)
+                    })
+                    .collect()
+            })
+            .collect();
         let grip_rest = grip_centres(&ty, GRIP_RADIUS);
         let mut f = DriverFigure {
             ty,
@@ -315,6 +351,7 @@ impl DriverFigure {
             sign: 0.0,
             lean: 0.0,
             base_lean: 0.0,
+            show_hands_in_cab: false,
             shown: true,
             settled: false,
             slide: 0.0,
@@ -328,6 +365,7 @@ impl DriverFigure {
             frames: [None; 2],
             rolls: [None; 2],
             hand_of,
+            arm_of,
             blend: Default::default(),
         };
         f.seat_in(v, seat);
@@ -336,7 +374,7 @@ impl DriverFigure {
 
     /// Put the figure into (another) vehicle's driver's seat: `false` when it has none.
     /// The traffic keeps a few figures and moves them from bus to bus.
-    pub(crate) fn attach(&mut self, v: &VehicleInstance) -> bool {
+    pub fn attach(&mut self, v: &VehicleInstance) -> bool {
         match seat_of(v) {
             Some(seat) => {
                 self.seat_in(v, seat);
@@ -388,7 +426,7 @@ impl DriverFigure {
     }
 
     /// Hide the figure (kept for another bus).
-    pub(crate) fn hide(&mut self, renderer: &Renderer, scene: &mut Scene) {
+    pub fn hide(&mut self, renderer: &Renderer, scene: &mut Scene) {
         for (_, inst) in &self.meshes {
             renderer.set_params(scene, *inst, &[], false, &[]);
         }
@@ -398,16 +436,21 @@ impl DriverFigure {
     /// Turn the hands with the wheel, pose, skin and place the figure; `show` false hides it,
     /// `mirror_only` keeps it out of the window's picture but in the mirrors (the driver's
     /// own view: OMSI shows the driver in the mirrors while one looks from his seat).
-    pub(crate) fn update(&mut self, renderer: &Renderer, scene: &mut Scene, v: &VehicleInstance, dt: f32, show: bool, mirror_only: bool) {
+    pub fn update(&mut self, renderer: &Renderer, scene: &mut Scene, v: &VehicleInstance, dt: f32, show: bool, mirror_only: bool) {
         if show != self.shown {
             for (_, inst) in &self.meshes {
                 renderer.set_params(scene, *inst, &[], show, &[]);
             }
             self.shown = show;
         }
+
+        // (in the cab with the hands shown: the figure is drawn in the window's picture too,
+        // with everything but the hands folded away, see the skinning below)
+        let force_visible_in_cab = mirror_only && self.show_hands_in_cab;
         for (_, inst) in &self.meshes {
-            renderer.set_mirror_only(scene, *inst, mirror_only);
+            renderer.set_mirror_only(scene, *inst, if force_visible_in_cab { false } else { mirror_only });
         }
+
         if !show {
             return;
         }
@@ -541,6 +584,64 @@ impl DriverFigure {
             } else {
                 skin_from(m, &self.curled[k], &posed.bones, pos, nrm);
             }
+
+            // In the cab view only the hands and the arms show: every other vertex (torso, head,
+            // legs) is folded onto the nearer arm's anchor, so that the body's triangles shrink
+            // to nothing and those joining an arm close it at the shoulder. The anchor lies on
+            // the upper arm's axis (the middle of its vertices: that bone is straight, where a
+            // centre taken over the bent arm lies off it, in the air inside the elbow); an arm
+            // with no upper-arm vertices falls back on the middle of its hand's vertices.
+            // (Folded onto the figure's origin, the triangles stretched to the seat.)
+            if mirror_only && self.show_hands_in_cab {
+                let (hand_of, arm_of) = (&self.hand_of[k], &self.arm_of[k]);
+                let count = pos.len().min(hand_of.len()).min(arm_of.len());
+                let upper_w = |i: usize, side: usize| -> f32 {
+                    let inf = &m.skin[i];
+                    (0..inf.n.max(1) as usize)
+                        .filter(|&j| inf.slot[j] as usize == UPPER_ARM_SLOT[side])
+                        .map(|j| if inf.n <= 1 { 1.0 } else { inf.weight[j] })
+                        .sum()
+                };
+                let mut up_sum = [Vec3::ZERO; 2];
+                let mut up_n = [0.0f32; 2];
+                let mut hd_sum = [Vec3::ZERO; 2];
+                let mut hd_n = [0.0f32; 2];
+                for i in 0..count {
+                    for side in 0..2 {
+                        if arm_of[i] == side as i8 && upper_w(i, side) > 0.5 {
+                            up_sum[side] += pos[i];
+                            up_n[side] += 1.0;
+                        }
+                        if hand_of[i] == side as i8 {
+                            hd_sum[side] += pos[i];
+                            hd_n[side] += 1.0;
+                        }
+                    }
+                }
+                let anchors: Vec<Vec3> = (0..2)
+                    .filter_map(|h| {
+                        if up_n[h] > 0.0 {
+                            Some(up_sum[h] / up_n[h])
+                        } else if hd_n[h] > 0.0 {
+                            Some(hd_sum[h] / hd_n[h])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let fold = anchors.first().copied().or_else(|| pos.first().copied()).unwrap_or(Vec3::ZERO);
+                for i in 0..count {
+                    if hand_of[i] < 0 && arm_of[i] < 0 {
+                        let here = pos[i];
+                        pos[i] = anchors
+                            .iter()
+                            .copied()
+                            .min_by(|a, b| a.distance_squared(here).total_cmp(&b.distance_squared(here)))
+                            .unwrap_or(fold);
+                    }
+                }
+            }
+
             renderer.update_mesh(scene, self.meshes[k].0, pos, nrm, &m.data.uvs);
         }
         let body = v.body_rotation();
@@ -556,7 +657,6 @@ impl DriverFigure {
             renderer.set_interior(scene, *inst, interior);
         }
     }
-
 }
 
 impl DriverFigure {
@@ -896,7 +996,7 @@ fn driver_type(world: &crate::scene::World, pick: u64) -> Option<Arc<HumanType>>
 }
 
 /// A driver figure's type, read once per file.
-pub(crate) fn cached_type(path: &std::path::Path) -> Option<Arc<HumanType>> {
+pub fn cached_type(path: &std::path::Path) -> Option<Arc<HumanType>> {
     static TYPES: std::sync::Mutex<Option<std::collections::HashMap<std::path::PathBuf, Option<Arc<HumanType>>>>> =
         std::sync::Mutex::new(None);
     let path = path.to_path_buf();
