@@ -91,7 +91,7 @@ const SLIDE_MAX: f32 = 0.20;
 /// body leaned forward by at most `LEAN_COMFORT` degrees) until the wrist is this fraction of
 /// the arm's length from the shoulder (1 is an arm stretched out, 0.9 an elbow bent about 130
 /// degrees); `UPPER_ARM` is the shoulder-to-elbow length (m) of the stock figure.
-const ARM_RATIO: f32 = 0.90;
+const ARM_RATIO: f32 = 0.88;
 const LEAN_COMFORT: f32 = 8.0;
 const UPPER_ARM: f32 = 0.30;
 /// A hand lets go this many seconds ahead of the moment it would leave its range (at most
@@ -1136,7 +1136,7 @@ impl DriverFigure {
                 continue;
             }
             let side = if k == 1 { 1.0 } else { -1.0 };
-            let shoulder = hip + up * 0.50 + Vec3::new(0.19 * side, 0.03, 0.0);
+            let shoulder = hip + up * 0.45 + Vec3::new(0.15 * side, 0.0, 0.0);
             let arm = UPPER_ARM + (wrist[k] - elbow[k]).length();
             let excess = (wrist[k] - shoulder).length() - ARM_RATIO * arm;
             if excess.is_finite() {
@@ -1327,7 +1327,7 @@ impl DriverFigure {
         let h = self.heading.to_radians();
         let right = Vec3::new(h.cos(), -h.sin(), 0.0);
         let side = if sh.hand == 1 { 1.0 } else { -1.0 };
-        let shoulder = self.hip + fwd * self.slide + Vec3::Z * 0.5 + right * (0.19 * side);
+        let shoulder = self.hip + fwd * self.slide + Vec3::Z * 0.45 + right * (0.15 * side);
         // The palm lies on the knob's end; the fingers point the way the arm comes from.
         let palm = -axis;
         let reach = knob - shoulder;
