@@ -630,7 +630,9 @@ impl DriverFigure {
         if !self.settled {
             // sat down already when first seen (an offscreen picture is one frame), the
             // seat slid up until the hands reach the rim
-            for round in 0..20 {
+            // how much of the lean is for the elbows' sake, not the reach
+            let mut comfort_extra = 0.0f32;
+            for round in 0..28 {
                 let mut p = Pose::new(0x5eed_d71e);
                 let targets = self.hand_targets(v, 0.0);
                 let try_input = self.pose_input(targets.as_ref(), fwd);
@@ -642,8 +644,11 @@ impl DriverFigure {
                     (Some(g), true) => (0..2).map(|k| (posed.wrist[k] - g[k]).length()).fold(0.0f32, f32::max),
                     _ => 0.0,
                 };
+                // An arm stretched out straight to the rim says the seat is too far back (the
+                // hands had just reached it): how far the wrists are from a driver's bent arms.
+                let excess = if posed.ok { self.arm_excess(&posed.elbow, &posed.wrist) } else { 0.0 };
                 if omsi_cfg::env::var_os("OMSI_DEBUG_DRIVER").is_some() {
-                    log::info!("driver settle {round}: slide {:.2} grips {:?} wrists {:?} elbows {:?} neck {:?} hip {:?}", self.slide, try_input.grips, posed.wrist, posed.elbow, posed.neck, posed.hip);
+                    log::info!("driver settle {round}: excess {excess:.3} slide {:.2} grips {:?} wrists {:?} elbows {:?} neck {:?} hip {:?}", self.slide, try_input.grips, posed.wrist, posed.elbow, posed.neck, posed.hip);
                 }
                 // the hand's frame follows the forearm: pose again until both settle
                 let moved = if posed.ok { self.keep_elbows(&posed.elbow) } else { 0.0 };
@@ -914,6 +919,9 @@ impl DriverFigure {
         // The hand that is off at the gear lever holds nothing: it takes no part in the
         // shuffling, and the other one must not let go meanwhile.
         let away = self.away();
+        // With a shift waiting to start, no hand sets out on a new regrip (the one that
+        // stays on the rim would be busy just when the other is to leave it).
+        let freeze = self.shift.pending;
         // the hand furthest out of its range goes first
         let mut order = [0usize, 1];
         let out_by = |h: &Hand, k: usize| {
@@ -931,10 +939,11 @@ impl DriverFigure {
             if inside(k, a) {
                 continue;
             }
+            let (lo, hi) = RANGE[k];
+            let lone = away[1 - k];
             // (the other hand keeps hold meanwhile, sliding if it has to)
             if self.hands[1 - k].mv.is_none() && !away[1 - k] {
                 // back against the turn, towards the other end of the range
-                let (lo, hi) = RANGE[k];
                 let to = if a > hi { lo + REGRIP_BACK } else { hi - REGRIP_BACK };
                 let to = if (to - REST[k]).abs() > 90.0 { REST[k] } else { to };
                 // (from where the hand is now: a hand that slid is already past the range)
