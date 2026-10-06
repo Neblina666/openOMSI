@@ -54,7 +54,6 @@ const REST: [f32; 2] = [-70.0, 70.0];
 /// range: the wheel seemed to turn by itself under hands frozen in the air.)
 const RANGE: [(f32, f32); 2] = [(-150.0, -20.0), (20.0, 150.0)];
 /// A hand lets go this far (degrees) past its range at most before the rim slides.
-const SLIP: f32 = 25.0;
 /// How far a fist rolls round the rim (degrees, see `hand_targets`) and the time constant
 /// (s) it rolls with.
 const ROLL: (f32, f32) = (-30.0, 120.0);
@@ -99,7 +98,7 @@ const UPPER_ARM: f32 = 0.30;
 /// (degrees) past its range before it lets go.
 const REGRIP_LEAD: f32 = 0.08;
 const LEAD_MAX: f32 = 14.0;
-const ONE_HAND_OVER: f32 = 15.0;
+
 /// What a gear lever measures (m, the diagonal of its parts' box): less is a button or a
 /// switch (an automatic's selector), more a panel.
 
@@ -812,7 +811,11 @@ impl DriverFigure {
                     .collect();
                 let fold = anchors.first().copied().or_else(|| pos.first().copied()).unwrap_or(Vec3::ZERO);
                 for i in 0..count {
-                    if hand_of[i] < 0 && arm_of[i] < 0 {
+                    let upper = (0..2).find(|&side| arm_of[i] == side as i8 && upper_w(i, side) > 0.5);
+                    if let Some(side) = upper {
+                        // Collapse the shoulder/upper arm to the elbow in cab view; hands and forearms remain visible.
+                        pos[i] = posed.elbow[side];
+                    } else if hand_of[i] < 0 && arm_of[i] < 0 {
                         let here = pos[i];
                         pos[i] = anchors
                             .iter()
@@ -940,47 +943,30 @@ impl DriverFigure {
                 continue;
             }
             let a = self.hands[k].on_rim + theta;
+            // If the other hand is at the shifter, regripping, or reserved for a pending
+            // shift, keep this hand planted and let it follow the wheel continuously.
+            if away[1 - k] || self.hands[1 - k].mv.is_some() || freeze {
+                continue;
+            }
             let ahead = a + lead;
             if inside(k, a) && inside(k, ahead) {
                 continue;
             }
             let (lo, hi) = RANGE[k];
-            // With the other hand at the gear lever this one is the wheel's only: it pushes
-            // the wheel round as far as it goes and only then takes it again further back.
-            let lone = away[1 - k];
-            // Always keep both hands on wheel unless shifting (rare and brief)
-            let can_regrip = self.hands[1 - k].mv.is_none() && !freeze && (!lone || a > hi + ONE_HAND_OVER || a < lo - ONE_HAND_OVER);
-            // (the other hand keeps hold meanwhile, sliding if it has to)
-            if can_regrip {
-                // back against the turn, towards the other end of the range
-                let up = if a > hi {
-                    true
-                } else if a < lo {
-                    false
-                } else {
-                    ahead > hi
-                };
-                let to = if up { lo + REGRIP_BACK } else { hi - REGRIP_BACK };
-                let to = if (to - REST[k]).abs() > 90.0 { REST[k] } else { to };
-                // (from where the hand is now: a hand that slid is already past the range)
-                let from = a;
-                // an unhurried reach back, only a little quicker the faster the wheel turns
-                // (at a tenth of a second a hand flew back to its hold); a lone hand is
-                // quicker, the wheel has none else
-                let dur = (0.38 + (to - from).abs() / 350.0) / (1.0 + self.rate.abs() / 2000.0);
-                let dur = dur.max(0.32);
-                self.hands[k] = Hand { on_rim: self.hands[k].on_rim, mv: Some(Regrip::new(from, to, dur, self.rate)) };
+            // Regrip only when both hands are on the rim and this hand is leaving its reach.
+            let up = if a > hi {
+                true
+            } else if a < lo {
+                false
             } else {
-                // the rim slides through the hand past its range: the hand goes on with it
-                // less and less over SLIP degrees (stopped dead at a limit, it jumped)
-                let (lo, hi) = RANGE[k];
-                let before = self.hands[k].on_rim + theta - turned;
-                let over = (lo - before).max(before - hi).max(0.0);
-                let outward = (before > hi && turned > 0.0) || (before < lo && turned < 0.0);
-                let follow = if outward { 1.0 - smooth(over / SLIP) } else { 1.0 };
-                let now = (before + turned * follow).clamp(lo - SLIP, hi + SLIP);
-                self.hands[k].on_rim = now - theta;
-            }
+                ahead > hi
+            };
+            let to = if up { lo + REGRIP_BACK } else { hi - REGRIP_BACK };
+            let to = if (to - REST[k]).abs() > 90.0 { REST[k] } else { to };
+            let from = a;
+            let dur = (0.38 + (to - from).abs() / 350.0) / (1.0 + self.rate.abs() / 2000.0);
+            let dur = dur.max(0.32);
+            self.hands[k] = Hand { on_rim: self.hands[k].on_rim, mv: Some(Regrip::new(from, to, dur, self.rate)) };
         }
         if self.still > SETTLE_AFTER && self.hands.iter().all(|h| h.mv.is_none()) && !away.iter().any(|&a| a) {
             let far = |k: usize| (self.hands[k].on_rim + theta - REST[k]).abs();
@@ -1200,7 +1186,6 @@ impl DriverFigure {
         let a = self.hands[other].on_rim + self.theta;
         let out = (RANGE[other].0 - a).max(a - RANGE[other].1);
         let busy = self.rate.abs() > 70.0 || out > 5.0;
-        let calm = self.rate.abs() < 60.0 && out <= 0.0;
         let hands_free = self.hands[0].mv.is_none() && self.hands[1].mv.is_none();
         // A gear being engaged comes before the wheel: the hand that is to work the lever
         // drops whatever it was doing, only the hand that stays on the rim must not be in
@@ -1256,7 +1241,7 @@ impl DriverFigure {
             }
         }
 
-        let wheel_assist = self.theta.abs() > 190.0;
+        let wheel_assist = self.theta.abs() > 400.0;
         let want = !wheel_assist || st.pending;
         // Set when the hand sets out for the knob this frame: whether for a shift.
         let mut start: Option<bool> = None;
@@ -1292,6 +1277,8 @@ impl DriverFigure {
             ShiftPhase::Hold => {
                 st.w = 1.0;
                 if wheel_assist {
+                    // Pick a normal grip once; the wheel-relative offset then follows rotation.
+                    self.hands[hand] = Hand { on_rim: REST[hand] - self.theta, mv: None };
                     st.phase = ShiftPhase::Back;
                 }
             }
