@@ -264,8 +264,6 @@ pub struct DriverFigure {
     /// what it is with the hands at their places.
     lean: f32,
     base_lean: f32,
-    /// Dynamic shoulder offset based on FoV (0..1) to prevent clipping in front camera view
-    shoulder_offset: f32,
     /// Whether hands/arms should remain visible in cab (first-person) view behind settings.
     pub show_hands_in_cab: bool,
     shown: bool,
@@ -505,7 +503,6 @@ impl DriverFigure {
             sign: 0.0,
             lean: 0.0,
             base_lean: 0.0,
-            shoulder_offset: 0.0,
             show_hands_in_cab: false,
             shown: false,
             settled: false,
@@ -545,7 +542,6 @@ impl DriverFigure {
         let hip = Vec3::from(seat.pos);
         let r = seat.rot.to_radians();
         self.hip = hip;
-        // Improved floor calculation for better initial positioning
         self.floor = Vec3::new(
             hip.x + r.sin() * SEAT_FRONT,
             hip.y + r.cos() * SEAT_FRONT,
@@ -569,7 +565,6 @@ impl DriverFigure {
         self.slide = 0.0;
         self.lean = 0.0;
         self.base_lean = 0.0;
-        self.shoulder_offset = 0.0;
         self.hands_placed = false;
         self.elbows = None;
         self.frames = [None; 2];
@@ -922,14 +917,9 @@ impl DriverFigure {
             }
         }
         let inside = |k: usize, a: f32| a >= RANGE[k].0 && a <= RANGE[k].1;
-        // Determine if this is a manual transmission (has shifter) or automatic (no shifter)
-        let is_manual = self.shifter.is_some();
-
         // The hand that is off at the gear lever holds nothing: it takes no part in the
-        // shuffling, and the other one must not let go meanwhile. In automatic, no hand is
-        // away. In manual, the shift hand may be away.
-        let away = if is_manual { self.away() } else { [false; 2] };
-
+        // shuffling, and the other one must not let go meanwhile.
+        let away = self.away();
         // With a shift waiting to start, no hand sets out on a new regrip (the one that
         // stays on the rim would be busy just when the other is to leave it).
         let freeze = self.shift.pending;
@@ -958,8 +948,7 @@ impl DriverFigure {
             // With the other hand at the gear lever this one is the wheel's only: it pushes
             // the wheel round as far as it goes and only then takes it again further back.
             let lone = away[1 - k];
-            // Always keep both hands on wheel unless shifting (rare and brief) in manual mode
-            // In automatic, always keep both hands on wheel
+            // Always keep both hands on wheel unless shifting (rare and brief)
             let can_regrip = self.hands[1 - k].mv.is_none() && !freeze && (!lone || a > hi + ONE_HAND_OVER || a < lo - ONE_HAND_OVER);
             // (the other hand keeps hold meanwhile, sliding if it has to)
             if can_regrip {
@@ -1151,8 +1140,7 @@ impl DriverFigure {
     /// How far the wrists are (m, the worst of the two) from where a driver's would be: the
     /// shoulder-to-wrist distance over what an arm bent as a driver holds it allows
     /// (`ARM_RATIO` of its length). The shoulders are taken from the hip and the lean; the
-    /// elbows and wrists are as posed (person frame). Dynamic shoulder offset adjusts
-    /// shoulder position based on camera FoV to prevent clipping.
+    /// elbows and wrists are as posed (person frame).
     fn arm_excess(&self, elbow: &[Vec3], wrist: &[Vec3]) -> f32 {
         let h = self.heading.to_radians();
         let fwd = Vec3::new(h.sin(), h.cos(), 0.0);
@@ -1165,9 +1153,7 @@ impl DriverFigure {
                 continue;
             }
             let side = if k == 1 { 1.0 } else { -1.0 };
-            // Apply dynamic shoulder offset to prevent camera clipping when looking sideways
-            let shoulder_x_offset = 0.14 * side + (self.shoulder_offset * 0.05 * side);
-            let shoulder = hip + up * 0.55 + Vec3::new(shoulder_x_offset, 0.0, 0.0);
+            let shoulder = hip + up * 0.55 + Vec3::new(0.14 * side, 0.0, 0.0);
             let arm = UPPER_ARM + (wrist[k] - elbow[k]).length();
             let excess = (wrist[k] - shoulder).length() - ARM_RATIO * arm;
             if excess.is_finite() {
@@ -1180,7 +1166,6 @@ impl DriverFigure {
     fn away(&self) -> [bool; 2] {
         let mut a = [false; 2];
         if let Some(sh) = &self.shifter {
-            // In manual transmission, the hand at the gear lever is "away" only during shift
             a[sh.hand] = self.shift.w > 0.0;
         }
         a
@@ -1271,7 +1256,8 @@ impl DriverFigure {
             }
         }
 
-        let want = (st.stopped && st.cool <= 0.0 && calm) || st.pending;
+        let wheel_assist = self.theta.abs() > 190.0;
+        let want = !wheel_assist || st.pending;
         // Set when the hand sets out for the knob this frame: whether for a shift.
         let mut start: Option<bool> = None;
         match st.phase {
@@ -1305,11 +1291,7 @@ impl DriverFigure {
             }
             ShiftPhase::Hold => {
                 st.w = 1.0;
-                // Very brief hold: hand on knob for minimal time, then back to wheel
-                if busy && st.idle > 0.8 {
-                    st.phase = ShiftPhase::Back;
-                    st.cool = 1.5;
-                } else if !st.stopped && st.idle > HOLD_AFTER && st.stroke >= 1.0 {
+                if wheel_assist {
                     st.phase = ShiftPhase::Back;
                 }
             }
@@ -1359,9 +1341,7 @@ impl DriverFigure {
         let h = self.heading.to_radians();
         let right = Vec3::new(h.cos(), -h.sin(), 0.0);
         let side = if sh.hand == 1 { 1.0 } else { -1.0 };
-        // Apply shoulder offset to prevent clipping when reaching to gear lever
-        let shoulder_offset_applied = self.shoulder_offset * 0.03 * side;
-        let shoulder = self.hip + fwd * self.slide + Vec3::Z * 0.55 + right * (0.14 * side + shoulder_offset_applied);
+        let shoulder = self.hip + fwd * self.slide + Vec3::Z * 0.55 + right * (0.14 * side);
         // The palm lies on the knob's end; the fingers point the way the arm comes from.
         let palm = -axis;
         let reach = knob - shoulder;
