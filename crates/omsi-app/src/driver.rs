@@ -185,6 +185,8 @@ struct ShiftState {
     hold_elapsed: f32,
     hold_target: f32,
     shift_count: u32,
+    /// First observation only seeds lever/gear/clutch values; it is never a shift event.
+    observed: bool,
 }
 
 impl Default for ShiftState {
@@ -207,6 +209,7 @@ impl Default for ShiftState {
             hold_elapsed: 0.0,
             hold_target: HOLD_MIN,
             shift_count: 0,
+            observed: false,
         }
     }
 }
@@ -549,7 +552,25 @@ impl DriverFigure {
         self.heading = seat.rot;
         self.lamps = seat.illumination;
         self.wheel = find_wheel(v, hip);
-        self.shifter = find_shifter(v, hip, seat.rot);
+
+        // Some converted buses contain a mirrored/inverted [drivpos] rotation. When a
+        // steering wheel was found, use its position to correct only an obviously wrong
+        // (roughly 180-degree) seat heading. Normal buses keep their authored rotation.
+        if let Some(w) = &self.wheel {
+            let d = w.centre - hip;
+            let flat = Vec3::new(d.x, d.y, 0.0);
+            if flat.length_squared() > 0.0025 {
+                let wheel_heading = flat.x.atan2(flat.y).to_degrees();
+                if wrap(wheel_heading - self.heading).abs() > 100.0 {
+                    log::warn!(
+                        "driver: correcting inverted [drivpos] heading {:.1} -> {:.1}",
+                        self.heading, wheel_heading
+                    );
+                    self.heading = wheel_heading;
+                }
+            }
+        }
+        self.shifter = find_shifter(v, hip, self.heading);
         self.shift = ShiftState::default();
         let r = self.wheel.as_ref().map(|w| w.tube + FINGER_HALF).unwrap_or(GRIP_RADIUS);
         if (r - self.grip_radius).abs() > 1e-4 {
@@ -1237,12 +1258,15 @@ impl DriverFigure {
         st.last_vars = vars;
 
         let clutch_edge = clutch > 0.55 && st.last_clutch <= 0.55;
+        let first_observation = !st.observed;
         st.last_clutch = clutch;
+        st.observed = true;
 
         // A real shift event is a lever movement, a gear-variable transition, or the clutch
-        // being pressed. Being stopped is deliberately NOT an event: this was the reason
-        // several buses left the driver permanently holding an unrecognised lever.
-        let active = knob_speed > LEVER_MOVING || var_moved || clutch_edge;
+        // being pressed. Being stopped is deliberately NOT an event. The first frame only
+        // seeds the observed values, preventing a bus that spawns with clutch/gear already
+        // active from making the driver reach for the lever immediately.
+        let active = !first_observation && (knob_speed > LEVER_MOVING || var_moved || clutch_edge);
         if active {
             st.idle = 0.0;
             if matches!(st.phase, ShiftPhase::Away | ShiftPhase::Back) {
@@ -1568,7 +1592,7 @@ fn find_shifter(v: &VehicleInstance, hip: Vec3, heading: f32) -> Option<Shifter>
             // a known gear state, however, this is enough to recover converted buses whose
             // lever object has a completely arbitrary name.
             let verticality = axis.z.abs();
-            if !has_gear_state || verticality < 0.45 || reach > 0.95 { continue; }
+            if !has_gear_state || verticality < 0.25 || reach > 1.15 { continue; }
             score += 2.0;
         }
         if best.as_ref().map(|b| score > b.0).unwrap_or(true) {
