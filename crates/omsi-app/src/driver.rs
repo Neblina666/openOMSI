@@ -169,9 +169,6 @@ struct ShiftState {
     phase: ShiftPhase,
     w: f32,
     reach: f32,
-    /// Last observed lever/vehicle state. Changes are used as shift events; merely being
-    /// stopped must NEVER make the driver grab a lever by itself.
-    last_pos: Option<glam::DVec3>,
     last_knob: Option<Vec3>,
     last_vars: Vec<f32>,
     last_clutch: f32,
