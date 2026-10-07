@@ -145,6 +145,8 @@ struct ShiftState {
     /// Time (s) the stopped bus's hand stays off the lever after the wheel was turned too
     /// far for one hand.
     cool: f32,
+    /// Hysteretic steering assist state; prevents rapid switching near the threshold.
+    wheel_assist: bool,
     last_pos: Option<glam::DVec3>,
     last_knob: Option<Vec3>,
     last_vars: Vec<f32>,
@@ -171,6 +173,7 @@ impl Default for ShiftState {
             stopped: false,
             still_for: 0.0,
             cool: 0.0,
+            wheel_assist: false,
             last_pos: None,
             last_knob: None,
             last_vars: Vec::new(),
@@ -836,7 +839,9 @@ impl DriverFigure {
         let up_now = turn.transform_vector3(w.up).normalize_or(w.up);
         let seen = up_now.dot(right).atan2(up_now.dot(up)).to_degrees();
         let by_var = v.var(&w.var).unwrap_or(0.0) * w.factor;
-        if seen.abs() > 10.0 && seen.abs() < 170.0 {
+        // Resolve the animation sign once. Re-deciding every frame from the wrapped mesh
+        // angle can invert the wheel during large turns on some buses.
+        if self.sign == 0.0 && seen.abs() > 10.0 && seen.abs() < 170.0 {
             self.sign = if wrap(by_var - seen).abs() <= wrap(-by_var - seen).abs() { 1.0 } else { -1.0 };
         }
         let theta = if self.sign != 0.0 { by_var * self.sign } else { seen };
@@ -1223,7 +1228,12 @@ impl DriverFigure {
             }
         }
 
-        let wheel_assist = self.theta.abs() > 400.0;
+        if self.theta.abs() >= 400.0 {
+            st.wheel_assist = true;
+        } else if self.theta.abs() <= 340.0 {
+            st.wheel_assist = false;
+        }
+        let wheel_assist = st.wheel_assist;
         let want = !wheel_assist || st.pending;
         // Set when the hand sets out for the knob this frame: whether for a shift.
         let mut start: Option<bool> = None;
@@ -1597,9 +1607,10 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
     for (i, vm) in v.ty.meshes.iter().enumerate() {
         let def = &v.ty.model.meshes[vm.def_index];
         for a in &def.animations {
+            // Some bus packages omit the animation kind even though the variable and
+            // origin describe the steering wheel. The variable name is the reliable part.
             if !a.variable.to_ascii_lowercase().starts_with("axle_steering")
                 || a.factor.abs() < 200.0
-                || a.kind != Some(omsi_model::AnimKind::Rot)
             {
                 continue;
             }
