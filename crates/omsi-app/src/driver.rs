@@ -2,7 +2,7 @@
 //! the actual wheel and gear lever measured from the bus model. The initial seat fit uses the
 //! driver's posed arm lengths and the measured wheel position so different buses and `.hum`
 //! body sizes share the same placement logic. In the driver's own view, enabling hands keeps
-//! the hands and arms visible while the torso is kept out of the camera.
+//! the hands and arms visible while the torso is moved behind the camera.
 //!
 //! The wheel's rim and animation are read from its mesh and `[newanim]` origin. Manual buses
 //! use the lever on the driver's side, including left- and right-hand-drive layouts. The hand
@@ -734,22 +734,49 @@ impl DriverFigure {
                 skin_from(m, &self.curled[k], &posed.bones, pos, nrm);
             }
 
-            // In the driver's own view preserve the complete arms and hands. Fold only
-            // torso/head vertices onto the wrists, keeping the shoulder and sleeve meshes
-            // intact so the arms do not appear clipped during a turn or a gear change.
+            // In the driver's own view keep complete arms and hands while moving the torso
+            // mesh behind the eye. Hiding the torso by collapsing every vertex onto a wrist
+            // creates long triangles across the view, so use one behind-camera anchor instead.
             if mirror_only && self.show_hands_in_cab {
                 let (hand_of, arm_of) = (&self.hand_of[k], &self.arm_of[k]);
                 let count = pos.len().min(hand_of.len()).min(arm_of.len());
-                let wrists = posed.wrist;
+                let h = self.heading.to_radians();
+                let fwd = Vec3::new(h.sin(), h.cos(), 0.0);
+                let hip = self.to_person(self.hip + fwd * self.slide);
+                let lean = self.lean.to_radians();
+                let up = Vec3::new(0.0, lean.sin(), lean.cos());
+                let shoulders = [
+                    hip + up * 0.55 + Vec3::new(-0.14, 0.0, 0.0),
+                    hip + up * 0.55 + Vec3::new(0.14, 0.0, 0.0),
+                ];
+                let body_anchor = Vec3::new(0.0, -1.25, 1.15);
+                let upper_weight = |i: usize, side: usize| -> f32 {
+                    let inf = &m.skin[i];
+                    (0..inf.n.max(1) as usize)
+                        .filter(|&j| inf.slot[j] as usize == UPPER_ARM_SLOT[side])
+                        .map(|j| if inf.n <= 1 { 1.0 } else { inf.weight[j] })
+                        .sum()
+                };
                 for i in 0..count {
-                    if hand_of[i] >= 0 || arm_of[i] >= 0 {
+                    if hand_of[i] >= 0 {
                         continue;
                     }
-                    let here = pos[i];
-                    let side = (0..2).min_by(|&a, &b| {
-                        wrists[a].distance_squared(here).total_cmp(&wrists[b].distance_squared(here))
-                    }).unwrap_or(0);
-                    pos[i] = wrists[side];
+                    if arm_of[i] >= 0 {
+                        let side = arm_of[i] as usize;
+                        if upper_weight(i, side) > 0.5 {
+                            // Move the shoulder root back smoothly along the upper arm, with
+                            // zero movement at the elbow. The sleeve stays whole and connected.
+                            let arm = posed.elbow[side] - shoulders[side];
+                            let t = if arm.length_squared() > 1e-5 {
+                                ((pos[i] - shoulders[side]).dot(arm) / arm.length_squared()).clamp(0.0, 1.0)
+                            } else {
+                                1.0
+                            };
+                            pos[i] -= Vec3::Y * (0.45 * (1.0 - smooth(t)));
+                        }
+                    } else {
+                        pos[i] = body_anchor;
+                    }
                 }
             }
 
