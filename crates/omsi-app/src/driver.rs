@@ -715,6 +715,14 @@ impl DriverFigure {
         }
         self.skins.resize_with(self.ty.meshes.len(), Default::default);
         let open = [0, 1].map(|k| self.hands[k].open().max(self.shift_open(k)));
+        // Snapshot the seat transform before taking mutable references into `self.skins`.
+        // Calling `self.to_person` inside that loop would borrow all of `self` immutably
+        // while the current skin is still mutably borrowed.
+        let cab_heading = self.heading.to_radians();
+        let cab_slide = self.slide;
+        let cab_hip = self.hip;
+        let cab_floor = self.floor;
+        let cab_lean = self.lean.to_radians();
         for (k, m) in self.ty.meshes.iter().enumerate() {
             let (pos, nrm) = &mut self.skins[k];
             if open.iter().any(|&o| o > 0.01) {
@@ -740,11 +748,15 @@ impl DriverFigure {
             if mirror_only && self.show_hands_in_cab {
                 let (hand_of, arm_of) = (&self.hand_of[k], &self.arm_of[k]);
                 let count = pos.len().min(hand_of.len()).min(arm_of.len());
-                let h = self.heading.to_radians();
-                let fwd = Vec3::new(h.sin(), h.cos(), 0.0);
-                let hip = self.to_person(self.hip + fwd * self.slide);
-                let lean = self.lean.to_radians();
-                let up = Vec3::new(0.0, lean.sin(), lean.cos());
+                let fwd = Vec3::new(cab_heading.sin(), cab_heading.cos(), 0.0);
+                let shifted_floor = cab_floor + fwd * cab_slide;
+                let d = cab_hip + fwd * cab_slide - shifted_floor;
+                let hip = Vec3::new(
+                    d.x * cab_heading.cos() - d.y * cab_heading.sin(),
+                    d.x * cab_heading.sin() + d.y * cab_heading.cos(),
+                    d.z,
+                );
+                let up = Vec3::new(0.0, cab_lean.sin(), cab_lean.cos());
                 let shoulders = [
                     hip + up * 0.55 + Vec3::new(-0.14, 0.0, 0.0),
                     hip + up * 0.55 + Vec3::new(0.14, 0.0, 0.0),
