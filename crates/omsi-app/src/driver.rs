@@ -819,7 +819,7 @@ impl DriverFigure {
                     pos[i] = if side >= 0 {
                         posed.elbow[side as usize]
                     } else {
-                        posed.hip
+                        (posed.hip[0] + posed.hip[1]) * 0.5
                     };
                 }
             }
