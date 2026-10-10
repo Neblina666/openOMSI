@@ -99,6 +99,9 @@ pub struct BusService {
     pub phase_t: f32,
     /// Seconds of boarding left (the people at the doors hold it open: `hold`).
     pub boarding: f32,
+    /// Seconds the people at the doors have held it past its departure at this stop: after
+    /// `HOLD_MAX` they hold it no longer (see `hold`).
+    pub held_over: f32,
     /// When it may leave the stop (seconds of the day).
     pub leave_at: f64,
     /// When it came to the stop it stands at (seconds of the day).
@@ -163,6 +166,9 @@ const EARLY_LEAVE: f64 = 20.0;
 const EARLY_LEAVE_RAIL: f64 = 120.0;
 /// A layover waits for the departure however long (a tour's bus in on its previous trip).
 const LAYOVER_WAIT: f64 = 1800.0;
+/// An untimed intermediate stop has only an interpolated departure. Holding to that
+/// estimate for many minutes can block the stop and the lane behind it on mod maps.
+const INTERPOLATED_STOP_WAIT: f64 = 120.0;
 
 /// How long a bus arriving at `now` stands at a stop it is to leave at `depart`.
 fn early_wait(depart: f64, now: f64, layover: bool, rail: bool) -> f64 {
@@ -175,6 +181,10 @@ fn early_wait(depart: f64, now: f64, layover: bool, rail: bool) -> f64 {
     };
     (depart - lead - now).clamp(0.0, LAYOVER_WAIT)
 }
+/// The longest the people at the doors hold a bus past its departure (s). Omsi.exe's AI
+/// buses do not stand at a stop for ever either.
+const HOLD_MAX: f32 = 60.0;
+
 /// On a layover, the doors open this long before the departure.
 const LAYOVER_BOARDING: f64 = 45.0;
 /// Pull into the bay over this distance before the stop: the stop's docking distance,
@@ -251,6 +261,7 @@ impl BusService {
             phase: Phase::Running,
             phase_t: 0.0,
             boarding: 0.0,
+            held_over: 0.0,
             leave_at: 0.0,
             arrived_at: 0.0,
             boarded: false,
@@ -321,7 +332,10 @@ impl BusService {
     /// person's stop is the bus's), not a stop it stands next to.
     pub fn hold(&mut self, stop: Option<i64>, secs: f32) {
         let here = stop.is_none_or(|s| self.stops.front().is_some_and(|f| f.id == s));
-        if self.phase == Phase::Boarding && here {
+        // (not for ever: somebody who never gets in - waiting at a door the bus does not
+        // open, the other side's on a bus with doors on both, or stuck on the way - held it
+        // at the stop for good, and the buses behind with it, #1801 #1697 #1544)
+        if self.phase == Phase::Boarding && here && self.held_over < HOLD_MAX {
             self.boarding = self.boarding.max(secs);
         }
     }
@@ -334,6 +348,7 @@ impl BusService {
         self.phase = Phase::Running;
         self.phase_t = 0.0;
         self.boarding = 0.0;
+        self.held_over = 0.0;
         self.boarded = false;
         self.layover = layover;
     }
@@ -389,6 +404,15 @@ impl BusService {
         !timed_only || self.waits_here(layover, rail, early)
     }
 
+    fn stop_wait(&self, depart: f64, now: f64, timed_only: bool, layover: bool, rail: bool) -> f64 {
+        let timed_stop = self.waits_here(layover, rail, depart - now);
+        if !self.holds_for_departure(timed_only, layover, rail, depart - now) {
+            return 0.0;
+        }
+        let scheduled = early_wait(depart, now, layover, rail);
+        if timed_stop { scheduled } else { scheduled.min(INTERPOLATED_STOP_WAIT) }
+    }
+
     /// Arrived at the front stop: what now.
     fn arrive(&mut self, ctx: &Ctx, depart: f64, at: (usize, f32)) {
         if omsi_cfg::flags::OMSI_DEBUG_STOPS.is_set() {
@@ -400,14 +424,11 @@ impl BusService {
         // a time on holds the bus for it; elsewhere its time is the running time shared out,
         // and an early bus serves and drives on. Without it (the default) the bus waits at
         // every stop it serves, as in Omsi.exe
-        let wait = if self.holds_for_departure(ctx.timed_waits_only, layover, rail, depart - ctx.day_time) {
-            early_wait(depart, ctx.day_time, layover, rail)
-        } else {
-            0.0
-        };
+        let wait = self.stop_wait(depart, ctx.day_time, ctx.timed_waits_only, layover, rail);
         self.leave_at = ctx.day_time + wait;
         self.arrived_at = ctx.day_time;
         self.boarding = boarding_time(ctx.id);
+        self.held_over = 0.0;
         self.boarded = false;
         // a layover opens the doors for the last minute only; anywhere else people get off
         // straight away
@@ -420,11 +441,13 @@ impl BusService {
         self.delay = (ctx.day_time + (self.boarding as f64).max(wait)) - depart;
         if ctx.debug {
             log::info!(
-                "t={:.1}: timetable bus {} at its stop, {:.0} s to its departure ({:?}) at {:?}",
+                "t={:.1}: timetable bus {} at its stop, {:.0} s to its departure, waiting {:.0} s ({:?}, timed {}) at {:?}",
                 ctx.day_time,
                 ctx.id,
                 depart - ctx.day_time,
+                wait,
                 self.phase,
+                self.waits_here(layover, rail, depart - ctx.day_time),
                 ctx.net.lanes.get(at.0).map(|l| { let p = l.at(at.1).0; (p.x.round(), p.y.round()) })
             );
         }
@@ -493,6 +516,9 @@ impl BusService {
             }
             Phase::Boarding => {
                 self.boarding -= ctx.dt;
+                if self.boarding > 0.0 && ctx.day_time >= self.leave_at {
+                    self.held_over += ctx.dt;
+                }
                 // an early bus waits for its departure with the doors open, as drivers do
                 // (shut, it stood at the stop for half a minute for no reason anyone could
                 // see); the doors close when it is time to go
@@ -768,6 +794,23 @@ mod tests {
     }
 
     #[test]
+    fn interpolated_intermediate_stop_cannot_hold_a_bus_for_many_minutes() {
+        let stop = |id: i64| Stop::from_tuple((0, 0.0, 0.0, 1200.0, id, 0.0));
+        let mut service = BusService::new(vec![stop(2), stop(3)]);
+        service.last_stop = Some(3);
+        assert!(!service.waits_here(false, false, 1200.0));
+        assert_eq!(service.stop_wait(1200.0, 0.0, false, false, false), 120.0);
+        assert_eq!(service.stop_wait(1200.0, 0.0, true, false, false), 0.0);
+        service.holds.push(2);
+        assert!(service.waits_here(false, false, 1200.0));
+        assert_eq!(service.stop_wait(1200.0, 0.0, false, false, false), 1180.0);
+        service.holds.clear();
+        service.stops.pop_front();
+        assert!(service.waits_here(false, false, 1200.0), "the terminus still keeps its layover");
+        assert_eq!(service.stop_wait(1200.0, 0.0, false, false, false), 1180.0);
+    }
+
+    #[test]
     fn station_side_comes_from_the_stop_it_boards_at() {
         let stop = |side: f32| Stop::from_tuple((0, 0.0, 0.0, 0.0, 1, side));
         let mut s = BusService::new(vec![stop(1.0)]);
@@ -854,6 +897,25 @@ mod tests {
         assert_eq!(service.phase, Phase::Boarding);
         service.step(&mut state, &mut vehicle, &service_context(&net, 400.0, 4.0));
         assert_eq!(service.phase, Phase::Closing);
+    }
+
+    /// Somebody at a door the bus never opens holds it a minute past its departure at
+    /// most, then it leaves (#1801: buses stood at their stops for good).
+    #[test]
+    fn people_at_the_doors_hold_a_bus_a_minute_past_its_time_at_most() {
+        let net = service_network();
+        let mut vehicle = service_vehicle();
+        let mut state = AiState::new(0, 0.0, 1);
+        let mut service = BusService::new(vec![Stop::from_tuple((0, 10.0, 0.0, 100.0, 1, 0.0))]);
+        service.arrive(&service_context(&net, 100.0, 0.0), 100.0, (0, 10.0));
+        let mut t = 100.0;
+        while t < 400.0 && service.phase == Phase::Boarding {
+            service.hold(Some(1), 2.5);
+            t += 0.5;
+            service.step(&mut state, &mut vehicle, &service_context(&net, t, 0.5));
+        }
+        assert_ne!(service.phase, Phase::Boarding, "still boarding at {t}");
+        assert!(t < 100.0 + 90.0, "held until {t}");
     }
 
     #[test]

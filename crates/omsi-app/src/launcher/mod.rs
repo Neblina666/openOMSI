@@ -19,9 +19,9 @@ mod season;
 mod state;
 #[cfg_attr(not(target_os = "android"), allow(unused_imports))]
 pub(crate) use state::crash_of;
-mod theme;
+pub(crate) mod theme;
 mod timetable;
-mod ui;
+pub(crate) mod ui;
 mod update;
 
 use glam::Vec2;
@@ -138,6 +138,9 @@ pub struct Launcher {
     map_rect: Option<Rect>,
     map_tex: Option<usize>,
     map_gen: u64,
+    /// The picture last shown (its interface, layers, preview and atlas) and when: idle,
+    /// the same picture is not drawn and shown again (see `frame`).
+    shown: Option<(Vec<omsi_ui::Vertex>, String, Instant)>,
     /// The window has the keyboard / is hidden: without focus it is drawn ten times a
     /// second, hidden not at all (a game started from it is being played).
     focused: bool,
@@ -180,6 +183,10 @@ impl Launcher {
     pub fn new(instance: wgpu::Instance) -> Launcher {
     let started = Instant::now();
     core::cleanup();
+    // (the ambience's recordings fetched while the launcher is open, ready for the first drive)
+    if crate::settings::Settings::load().ambient {
+        crate::soundscape::pack::Pack::fetch_if_missing();
+    }
     let mut app = Launcher {
         instance,
         window: None,
@@ -226,6 +233,7 @@ impl Launcher {
         map_rect: None,
         map_tex: None,
         map_gen: 0,
+        shown: None,
         focused: true,
         occluded: false,
         awake_in_game: false,
@@ -398,7 +406,10 @@ impl ApplicationHandler for Launcher {
             }
         }
         if omsi_cfg::flags::OMSI_BACKGROUND.is_set() {
-            attrs = attrs.with_active(false);
+            // (a test window is never shown either: OMSI_LAUNCHER_SHOT draws into a texture of
+            // its own, so the pictures of a hidden window come out the same, and nothing pops
+            // up on the screen of whoever runs the checks)
+            attrs = attrs.with_active(false).with_visible(false);
         }
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
@@ -439,9 +450,17 @@ impl ApplicationHandler for Launcher {
         if !matches!(event, WindowEvent::RedrawRequested) {
             self.last_input = Instant::now();
         }
+        // (the game opens on the screen the launcher stands on, #1959)
+        if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::Focused(true)) {
+            if let Some(w) = self.window.as_ref() {
+                let (at, size) = (w.outer_position().ok(), w.outer_size());
+                core::instances::set_screen_at(at.map(|p| (p.x + size.width as i32 / 2, p.y + size.height as i32 / 2)));
+            }
+        }
         match event {
             WindowEvent::CloseRequested => {
                 self.pages.pads.cancel_feedback_test();
+                showroom::clear_placing_mark();
                 event_loop.exit();
             }
             WindowEvent::Touch(t) => self.touch(t, scale),
@@ -932,6 +951,18 @@ impl Launcher {
                 self.icons.insert(addr, id);
             }
         }
+        // Idle (no input for 3 s), a picture the same as the one on the screen is not drawn and
+        // presented again - the window keeps it: the launcher left open redrew the same
+        // picture 20 times a second, a pass with 4x MSAA and a present each, which on OpenGL
+        // and DirectX 11 cost as much as a frame of the game's interface. Once a second it is
+        // drawn all the same.
+        // (the map is drawn every frame it is open: its markers follow the mouse)
+        let key = format!("{pw}x{ph} {} {} {} {layers:?} {ranges:?}", self.preview_gen, self.showroom.drawn, self.ui.atlas.generation);
+        let idle = self.last_input.elapsed().as_secs_f32() > 3.0 && self.dragging.is_none() && self.shot.is_none() && self.map_rect.is_none();
+        if idle && self.shown.as_ref().is_some_and(|(v, k, at)| *v == verts && *k == key && at.elapsed().as_secs_f32() < 1.0) {
+            self.check_exit(event_loop);
+            return;
+        }
         let draws: Vec<Draw> = ranges.iter().enumerate().map(|(k, (r, tex))| Draw { buffer: 0, range: r.clone(), layer: k, texture: *tex }).collect();
         let bg = wgpu::Color { r: 0.0056, g: 0.0056, b: 0.0056, a: 1.0 };
         if let Some(gpu) = self.gpu.as_mut() {
@@ -968,6 +999,7 @@ impl Launcher {
         }
         window.pre_present_notify();
         frame.present();
+        self.shown = Some((verts, key, Instant::now()));
         if std::mem::take(&mut self.first_frame) {
             log::info!("launcher: first frame presented in {:.2} s", self.started.elapsed().as_secs_f64());
         }
@@ -976,6 +1008,7 @@ impl Launcher {
 
     fn check_exit(&mut self, event_loop: &ActiveEventLoop) {
         if self.exit_after.map(|e| self.started.elapsed().as_secs_f32() >= e).unwrap_or(false) {
+            showroom::clear_placing_mark();
             event_loop.exit();
         }
     }
@@ -1195,7 +1228,7 @@ impl Launcher {
         match (self.preview_tex, self.showroom.has_picture()) {
             (Some(tex), true) => self.ui.image(r, tex, RADIUS),
             _ => {
-                let t = if self.showroom.error.is_some() { "No preview" } else { "Loading…" };
+                let t = if self.showroom.error.is_some() { "No preview" } else { "Loading..." };
                 self.ui.text_in(t, r, 13.0, Weight::Regular, TEXT_FAINT, Align::Center);
             }
         }
@@ -1223,7 +1256,7 @@ impl Launcher {
             _ => {
                 self.ui.solid(r);
                 self.ui.p().rounded(r, RADIUS, omsi_ui::Color::rgba(13, 13, 13, 1.0));
-                let t = if status.is_empty() { "Loading…" } else { status };
+                let t = if status.is_empty() { "Loading..." } else { status };
                 self.ui.text_in(t, Rect::new(r.x, r.y + r.h * 0.5 - 12.0, r.w, 24.0), 13.5, Weight::Regular, TEXT_FAINT, Align::Center);
             }
         }
@@ -1266,7 +1299,7 @@ impl Launcher {
             _ => {
                 self.ui.solid(r);
                 self.ui.p().rounded(r, RADIUS, FIELD);
-                let t = if self.showroom.error.is_some() { "No preview" } else { "Loading…" };
+                let t = if self.showroom.error.is_some() { "No preview" } else { "Loading..." };
                 self.ui.text_in(t, Rect::new(r.x, r.y + r.h * 0.5 - 12.0, r.w, 24.0), 13.0, Weight::Regular, TEXT_FAINT, Align::Center);
             }
         }

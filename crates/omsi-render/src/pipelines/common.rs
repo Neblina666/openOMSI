@@ -2,6 +2,38 @@
 
 use crate::DEPTH_FORMAT;
 
+/// A native compiler can abort before wgpu returns an error. Record both sides of each
+/// operation so the last unfinished one identifies the module/entry point, not just "sky"
+/// (at debug level: two lines a shader and a pipeline; the texts are only made when logged).
+fn logged<T>(begin: impl FnOnce() -> String, end: impl FnOnce() -> String, op: impl FnOnce() -> T) -> T {
+    let level = log::Level::Debug;
+    if !log::log_enabled!(level) {
+        return op();
+    }
+    let thread = std::thread::current();
+    let started = std::time::Instant::now();
+    log::log!(level, "renderer: {}, thread {:?} ({})", begin(), thread.id(), thread.name().unwrap_or("unnamed"));
+    let done = op();
+    log::log!(level, "renderer: {}, thread {:?}, {:.1} ms", end(), thread.id(), started.elapsed().as_secs_f64() * 1000.0);
+    done
+}
+
+pub(crate) fn compile_shader(device: &wgpu::Device, descriptor: wgpu::ShaderModuleDescriptor<'_>) -> wgpu::ShaderModule {
+    let label = descriptor.label.unwrap_or("unnamed").to_string();
+    logged(|| format!("shader begin {label}"), || format!("shader end {label}"), || device.create_shader_module(descriptor))
+}
+
+pub(crate) fn compile_pipeline(device: &wgpu::Device, descriptor: &wgpu::RenderPipelineDescriptor<'_>) -> wgpu::RenderPipeline {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let fragment = descriptor.fragment.as_ref();
+    let begin = || format!("pipeline begin #{id} {}, vs {}, fs {}, {}x MSAA, constants {:?}",
+        descriptor.label.unwrap_or("unnamed"), descriptor.vertex.entry_point.unwrap_or("auto"),
+        fragment.and_then(|f| f.entry_point).unwrap_or("none"), descriptor.multisample.count,
+        fragment.map(|f| f.compilation_options.constants));
+    logged(begin, || format!("pipeline end #{id}"), || device.create_render_pipeline(descriptor))
+}
+
 /// A pipeline that draws without vertex buffers (a triangle over the screen, or quads the
 /// vertex shader makes up): both stages from one module, triangles, none culled. By
 /// default `vs_main`, no depth buffer and one sample.
@@ -40,7 +72,7 @@ impl<'a> NoVertexPipeline<'a> {
     }
 
     pub(crate) fn create(self, device: &wgpu::Device) -> wgpu::RenderPipeline {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        compile_pipeline(device, &wgpu::RenderPipelineDescriptor {
             label: Some(self.label),
             layout: Some(self.layout),
             vertex: wgpu::VertexState {
@@ -68,7 +100,7 @@ impl<'a> NoVertexPipeline<'a> {
                 compilation_options: Default::default(),
             }),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(device).as_ref(),
         })
     }
 }

@@ -191,7 +191,7 @@ fn ibis_line_number(v: &omsi_sim::VehicleInstance) -> Option<String> {
 /// `IBIS_LinieKurs`, the IBIS's number without its letter, a pick made 92E into 92 on the
 /// IBIS and the matrix. Not `SetLineTo` on any other bus: no script of its own writes it,
 /// only an earlier pick, so a line typed on the IBIS since went back to that pick's.
-fn destination_line(v: &omsi_sim::VehicleInstance) -> String {
+pub(crate) fn destination_line(v: &omsi_sim::VehicleInstance) -> String {
     let blind = crate::schedule::has_roller_blind(v).then(|| v.str_var("SetLineTo"));
     [Some(v.str_var("Matrix_Nr")), blind]
         .into_iter()
@@ -398,13 +398,13 @@ impl App {
 fn keyboard_pages(app: &App) -> Vec<Page> {
     let cfg = keyboard_cfg(app);
     let names = crate::describe::names(&app.args.root, &app.settings.language);
-    let mut vehicle = vec![opens("Add a vehicle event…", "Choose a control supplied by the bus or its mods", "key_events")];
+    let mut vehicle = vec![opens("Add a vehicle event...", "Choose a control supplied by the bus or its mods", "key_events")];
     let mut game = Vec::new();
     for (is_game, bindings, rows) in [(false, &cfg.vehicles, &mut vehicle), (true, &cfg.game, &mut game)] {
         let mut bindings: Vec<_> = bindings.iter().enumerate().collect();
         bindings.sort_by_key(|(_, b)| names.control(&b.action).to_lowercase());
         for (i, b) in bindings {
-            let key = if app.menus.key_capture == Some((is_game, i)) { "press a key…".into() }
+            let key = if app.menus.key_capture == Some((is_game, i)) { "press a key...".into() }
                 else { crate::keys::key_name(b.scan_code as i64, b.modifier as i64) };
             rows.push((row(&names.control(&b.action), 'a', &key, "Enter to change; Delete clears; Esc cancels", None),
                 format!("keybind {} {i}", if is_game { "g" } else { "v" })));
@@ -447,7 +447,7 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             }
             events.sort_by(|a, b| a.1.to_ascii_lowercase().cmp(&b.1.to_ascii_lowercase()).then_with(|| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase())));
             for (action, label) in events {
-                out.push((format!("{label}  ·  KY_{action}"), format!("key_event {action}")));
+                out.push((format!("{label}  |  KY_{action}"), format!("key_event {action}")));
             }
             if out.is_empty() {
                 out.push(("No vehicle events were found".into(), "back".into()));
@@ -558,11 +558,11 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
                 if searching {
                     // (searched for: every type, under its manufacturer's name)
                     for v in vs {
-                        out.push((format!("{name}  ·  {}", v.2), format!("bus {}", v.3)));
+                        out.push((format!("{name}  |  {}", v.2), format!("bus {}", v.3)));
                     }
                 } else if vs.len() == 1 {
                     // (a manufacturer with one type: that type at once)
-                    out.push((format!("{name}  ·  {}", vs[0].2), format!("bus {}", vs[0].3)));
+                    out.push((format!("{name}  |  {}", vs[0].2), format!("bus {}", vs[0].3)));
                 } else {
                     out.push((format!("{name}  ({} {})", vs.len(), tr("models")), format!("maker {key}")));
                 }
@@ -581,7 +581,7 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
                     let parts: Vec<&str> = t.1.split('/').collect();
                     let folder = parts.get(1).copied().unwrap_or_default();
                     let file = parts.last().copied().unwrap_or_default().rsplit_once('.').map(|x| x.0).unwrap_or_default();
-                    label = format!("{label}  ·  {}  ·  {}", bus_label(folder), bus_label(file));
+                    label = format!("{label}  |  {}  |  {}", bus_label(folder), bus_label(file));
                 }
                 out.push((label, format!("bus {}", t.1)));
             }
@@ -628,11 +628,11 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
         let query = search_query(app);
         out.retain(|(label, action)| search_matches(label, action, query));
         let label = if app.menus.menu_edit_search {
-            format!("{}: {query}_  ({})", tr("Search…"), tr("Enter sets it, Esc cancels"))
+            format!("{}: {query}_  ({})", tr("Search..."), tr("Enter sets it, Esc cancels"))
         } else if query.is_empty() {
-            tr("Search…")
+            tr("Search...")
         } else {
-            format!("{}: {query}", tr("Search…"))
+            format!("{}: {query}", tr("Search..."))
         };
         out.insert(0, (label, "search".into()));
     }
@@ -674,7 +674,7 @@ pub(crate) fn menu_extras(
         ListKind::Keyboard(_) => (MenuKind::Options, head("Keyboard"), None),
         ListKind::ControllerDevices(_) => (MenuKind::Options, head("Game controllers"), None),
         ListKind::Controller(name, _) => (MenuKind::Options, Some((name.clone(), String::new())), None),
-        ListKind::ControllerAxis(name, a) => (MenuKind::Options, Some((format!("{} · Axis {}", name, a + 1), String::new())), None),
+        ListKind::ControllerAxis(name, a) => (MenuKind::Options, Some((format!("{} | Axis {}", name, a + 1), String::new())), None),
         ListKind::ControllerButtons(name) => (MenuKind::List, Some(("Choose a button".into(), name.clone())), None),
         ListKind::ControllerButtonSettings(name, b) => (MenuKind::Options, Some((crate::game_controller_menu::button_label(*b), name.clone())), None),
         ListKind::ControllerButton(_, b) => (MenuKind::List, Some((format!("{}: choose an action", crate::game_controller_menu::button_label(*b)), String::new())), None),
@@ -729,7 +729,7 @@ pub(crate) fn menu_extras(
                 let trip_line = tour_line(ln, num).unwrap_or_else(|| line_sign(schedule, line));
                 Some(Preview {
                     title: format!("{} {}", tr("Tour"), num.trim()),
-                    meta: format!("{} {}  ·  {} {}/{}  ·  {}", tr("Line"), trip_line, tr("Trip"), trip + 1, n_trips.max(1), tr("Choose the stop to start from")),
+                    meta: format!("{} {}  |  {} {}/{}  |  {}", tr("Line"), trip_line, tr("Trip"), trip + 1, n_trips.max(1), tr("Choose the stop to start from")),
                     rows,
                     chosen: Some(chosen),
                     button: Some(tr("Start trip")),
@@ -1105,7 +1105,7 @@ fn steps_of(verb: &str) -> Option<Vec<f32>> {
         "ui_scale" => (10..=40).map(|v| v as f32 * 0.05).collect(),
         "chat_size" => (5..=30).map(|v| v as f32 * 0.1).collect(),
         "ui_opacity" => (4..=20).map(|v| v as f32 * 0.05).collect(),
-        "vol_ai" | "vol_scenery" => (0..=20).map(|v| v as f32 * 0.05).collect(),
+        "vol_ai" | "vol_scenery" | "vol_ambient" => (0..=20).map(|v| v as f32 * 0.05).collect(),
         "wheel_range" => (6..=60).map(|v| v as f32 * 30.0).collect(),
         "wheel_lock" => std::iter::once(0.0).chain((2..=60).map(|v| v as f32 * 30.0)).collect(),
         "fov" => std::iter::once(0.0).chain((20..=120).map(|v| v as f32)).collect(),
@@ -1141,6 +1141,8 @@ fn steps_of(verb: &str) -> Option<Vec<f32>> {
             v
         }
         "rain_amt" | "wet" => (0..=100).map(|v| v as f32 / 100.0).collect(),
+        // the cloud cover: one value from a clear sky to a closed one, in steps of 2 %
+        "cloud_cover" => (0..=50).map(|v| v as f32 / 50.0).collect(),
         "brightness" => (0..=30).map(|v| v as f32 * 0.05).collect(),
         "humidity" => (0..=100).map(|v| v as f32).collect(),
         "temp" => (-20..=45).map(|v| v as f32).collect(),
@@ -1152,7 +1154,7 @@ fn steps_of(verb: &str) -> Option<Vec<f32>> {
 
 /// The cloud types of OMSI's weather (`Weather/clouds.cfg`): the name in a weather file and
 /// the name shown.
-const CLOUD_TYPES: [(&str, &str); 5] = [("-1", "None"), ("Cumulus 1", "Few clouds"), ("Cumulus 2", "Scattered"), ("Cumulus 3", "Broken"), ("Overcast 1", "Overcast")];
+use crate::weather_setup::CLOUD_KINDS;
 
 /// The kinds of precipitation of a weather file (`[precip]`'s first number).
 const PRECIP_KINDS: [&str; 3] = ["None", "Rain", "Snow"];
@@ -1160,10 +1162,9 @@ const PRECIP_KINDS: [&str; 3] = ["None", "Rain", "Snow"];
 /// The name the weather has once it was set by hand.
 pub(crate) const CUSTOM_WEATHER: &str = "Custom weather";
 
-/// The index of the cloud type `kind` (a weather file's) in `CLOUD_TYPES`.
+/// The index of the cloud type `kind` (a weather file's) in `CLOUD_KINDS`.
 fn cloud_index(kind: &str) -> Option<usize> {
-    let k = kind.trim();
-    CLOUD_TYPES.iter().position(|(id, _)| id.eq_ignore_ascii_case(k) || (*id == "-1" && (k.is_empty() || k.starts_with("-1"))))
+    crate::weather_setup::cloud_kind_index(kind)
 }
 
 /// Set the kind of precipitation (an index of `PRECIP_KINDS`) of the weather set by hand.
@@ -1260,6 +1261,7 @@ fn option_now(app: &App, verb: &str, arg: &str) -> Option<f32> {
         "ui_opacity" => s.ui_opacity,
         "vol_ai" => s.vol_ai,
         "vol_scenery" => s.vol_scenery,
+        "vol_ambient" => s.vol_ambient,
         "wheel_range" => s.wheel_range,
         "wheel_lock" => s.wheel_lock,
         "triple_width_mm" => s.triple.width_mm,
@@ -1295,6 +1297,7 @@ fn option_now(app: &App, verb: &str, arg: &str) -> Option<f32> {
             if w.precip.first().copied().unwrap_or(0.0) < 0.5 { 0.0 } else { (w.precip.get(1).copied().unwrap_or(0.0) / 255.0).clamp(0.0, 1.0) }
         }
         "wet" => app.session.wetness,
+        "cloud_cover" => crate::weather_setup::cover_of(app.session.weather.as_ref()?),
         "brightness" => custom_state(app).brightness,
         "humidity" => custom_state(app).humidity,
         "temp" => app.session.weather.as_ref()?.temp.0,
@@ -1404,6 +1407,10 @@ fn option_set(app: &mut App, verb: &str, arg: &str, v: f32) -> Option<(&'static 
         "vol_scenery" => {
             app.settings.vol_scenery = (v * 100.0).round() / 100.0;
             Some(("vol_scenery", app.settings.vol_scenery.to_string()))
+        }
+        "vol_ambient" => {
+            app.settings.vol_ambient = (v * 100.0).round() / 100.0;
+            Some(("vol_ambient", app.settings.vol_ambient.to_string()))
         }
         "wheel_range" => {
             app.settings.wheel_range = v.round();
@@ -1534,6 +1541,18 @@ fn option_set(app: &mut App, verb: &str, arg: &str, v: f32) -> Option<(&'static 
         "wet" => {
             let mut c=custom_state(app); c.road_wetness=v; app.set_custom_weather(c); None
         }
+        "cloud_cover" => {
+            // (and the kind the cover stands nearest: the picture the sky is drawn with)
+            let v = v.clamp(0.0, 1.0);
+            app.edit_weather(|w| {
+                w.cloud_cover = Some(v);
+                w.clouds.0 = CLOUD_KINDS[crate::weather_setup::cloud_kind_nearest(v)].id.to_string();
+                if v <= 0.0 {
+                    w.clouds.1 = 0.0;
+                }
+            });
+            None
+        }
         "brightness" => {
             let mut c=custom_state(app); c.brightness=v; app.set_custom_weather(c); None
         }
@@ -1570,6 +1589,7 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "mouse" => app.input.mouse_drive,
         "mouse_right" => s.mouse_right_off,
         "mouse_smooth" => s.mouse_smooth,
+        "mouse_hold" => s.mouse_hold,
         "blinker_cancel" => s.blinker_cancel,
         "fps" => s.show_fps,
         "get_up" => s.get_up,
@@ -1600,6 +1620,7 @@ fn toggle_now(app: &App, id: &str) -> Option<bool> {
         "reflections" => s.reflections,
         "clouds" => s.clouds,
         "windy_trees" => s.windy_trees,
+        "ambient" => s.ambient,
         "fullscreen" => s.fullscreen,
         "vsync" => s.vsync,
         "texture_compression" => s.texture_compression,
@@ -1699,6 +1720,11 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
         "mouse_smooth" => {
             app.settings.mouse_smooth = on;
             Some(("mouse_smooth", bit))
+        }
+        "mouse_hold" => {
+            app.settings.mouse_hold = on;
+            app.sync_mouse_grab();
+            Some(("mouse_hold", bit))
         }
         "get_up" => {
             app.settings.get_up = on;
@@ -1828,6 +1854,7 @@ fn toggle_set(app: &mut App, id: &str, on: bool) -> Option<(&'static str, String
             app.settings.windy_trees = on;
             Some(("windy_trees", bit))
         }
+        "ambient" => { app.settings.ambient = on; Some(("ambient", bit)) }
         "fullscreen" => {
             app.settings.fullscreen = on;
             if app.gfx.spanned {
@@ -2062,7 +2089,7 @@ pub(crate) fn dropdown_for(app: &App, row: usize, id: &str) -> Option<Dropdown> 
         }
         "cloudkind" => {
             current = app.session.weather.as_ref().and_then(|w| cloud_index(&w.clouds.0));
-            CLOUD_TYPES.iter().enumerate().map(|(i, (_, n))| (tr(*n), format!("cloud {i}"))).collect()
+            CLOUD_KINDS.iter().enumerate().map(|(i, k)| (tr(k.label), format!("cloud {i}"))).collect()
         }
         "precipkind" => {
             current = app.session.weather.as_ref().map(|w| (w.precip.first().copied().unwrap_or(0.0).max(0.0) as usize).min(PRECIP_KINDS.len() - 1));
@@ -2116,9 +2143,11 @@ pub(crate) fn dropdown_apply(app: &mut App, action: &str) {
             app.session.metar_next = 0.0;
         }
         "cloud" => {
-            if let Some(i) = arg.trim().parse::<usize>().ok().filter(|i| *i < CLOUD_TYPES.len()) {
+            if let Some(i) = arg.trim().parse::<usize>().ok().filter(|i| *i < CLOUD_KINDS.len()) {
                 app.edit_weather(|w| {
-                    w.clouds.0 = CLOUD_TYPES[i].0.to_string();
+                    w.clouds.0 = CLOUD_KINDS[i].id.to_string();
+                    // (the kinds are points on the cover's scale: picking one sets the cover)
+                    w.cloud_cover = Some(CLOUD_KINDS[i].cover);
                     if i == 0 {
                         w.clouds.1 = 0.0;
                     }
@@ -2226,6 +2255,7 @@ fn same_value(a: &str, b: &str) -> bool {
 fn select_options(key: &str) -> Vec<(&'static str, &'static str)> {
     match key {
         "cloud_quality" => vec![("high", "High"), ("low", "Low")],
+        "rain_quality" => vec![("high", "High"), ("medium", "Medium"), ("low", "Low")],
         "graphics" => vec![("vanilla", "Vanilla (as OMSI 2)"), ("vanilla_plus", "Vanilla+"), ("enhanced", "Enhanced"), ("enhanced_plus", "Enhanced+")],
         "msaa" => vec![("1", "Off"), ("2", "2x MSAA"), ("4", "4x MSAA"), ("8", "8x MSAA")],
         "render_scale" => vec![("auto", "Auto"), ("1", "100%"), ("0.85", "85%"), ("0.75", "75%"), ("0.67", "67%"), ("0.5", "50%")],
@@ -2242,6 +2272,7 @@ fn select_options(key: &str) -> Vec<(&'static str, &'static str)> {
         "resolution" => crate::launcher::pages::RESOLUTIONS.to_vec(),
         "navigator_corner" => vec![("top-left", "Top left"), ("top-right", "Top right"), ("bottom-left", "Bottom left"), ("bottom-right", "Bottom right")],
         "boarding" => vec![("auto", "Pay and take the ticket"), ("pay", "The driver sells the ticket"), ("walk", "Just walk in")],
+        "standing_chance" => vec![("0", "Never"), ("5", "5%"), ("10", "10%"), ("25", "25%"), ("50", "50%"), ("100", "Always")],
         "pax_voices" => vec![("all", "Greetings and tickets"), ("tickets", "Only the ticket asked for"), ("off", "Silent")],
         "maintenance" => vec![("0", "Infinite (no wear)"), ("1", "Very bad"), ("2", "Bad"), ("3", "Normal"), ("4", "Good")],
         "ai_unsched_factor" => vec![("25", "25%"), ("50", "50%"), ("75", "75%"), ("100", "100%"), ("150", "150%"), ("200", "200%")],
@@ -2319,6 +2350,7 @@ fn sync_live(app: &mut App) {
     if let Some(h) = app.session.humans.as_mut() {
         h.exact_fare = s.exact_fare;
         h.boarding = s.boarding.clone();
+        h.stand_chance = s.standing_chance;
         h.voices = match s.pax_voices.as_str() {
             "off" => 2,
             "tickets" => 1,
@@ -2347,6 +2379,7 @@ fn options_pages(app: &App) -> Vec<Page> {
         switch_row(app, "info_bar", "Information bar (Shift+Y)", "Displays information such as the time, speed, and other details at the top of the screen"),
         switch_row(app, "exact_fare", "Passengers pay the exact fare", "No change is given at the cash desk"),
         pick("boarding", "Boarding", "How passengers get their tickets"),
+        pick("standing_chance", "Standing passengers", "The chance a passenger stands although a seat is free"),
         pick("maintenance", "Maintenance", later),
         pick("ai_unsched_factor", "Random traffic", later),
         pick("ai_max_scheduled", "Timetable vehicles", later),
@@ -2374,6 +2407,7 @@ fn options_pages(app: &App) -> Vec<Page> {
         switch_row(app, "clouds", "Clouds", later),
         pick("cloud_quality", "Cloud quality", "Enhanced: the volumetric clouds marched in fewer steps - faster, a little grainier")
             .filter(|_| matches!(crate::settings::graphics_mode(&app.settings.graphics), "enhanced" | "enhanced_plus") && app.settings.clouds),
+        pick("rain_quality", "Rain quality", "Lower is faster: the drops on the glass painted less often, less spray and fewer streaks; Low shows OMSI 2's own rain on the glass (from the next bus loaded)"),
         switch_row(app, "windy_trees", "Windy trees", "The trees' leaves bend and sway in the wind and its gusts; with no wind they stand still"),
     ]
         .into_iter()
@@ -2466,6 +2500,8 @@ fn options_pages(app: &App) -> Vec<Page> {
     let sound: Vec<(String, String)> = vec![
         slider_row(app, "volume", "Volume", "Set how loud the game should be", &pct),
         slider_row(app, "vol_ai", "Traffic", "How loud the other vehicles are", &pct),
+        switch_row(app, "ambient", "Ambience", "The place, the weather, the birds of the season and the town's life, from real recordings"),
+        slider_row(app, "vol_ambient", "Ambience volume", "How loud the ambience is", &pct),
         slider_row(app, "vol_scenery", "Surroundings", "How loud the sounds of the scenery are", &pct),
         switch_row(app, "doppler", "Doppler effect", "Approaching sounds higher, receding ones lower"),
         pick("pax_voices", "Passenger voices", "What passengers say"),
@@ -2531,6 +2567,7 @@ fn options_pages(app: &App) -> Vec<Page> {
         slider_row(app, "mouse_sens", "Mouse steering sensitivity", "Adjust how much the steering wheel turns based on mouse movement", &pct),
         slider_row(app, "mouse_pedal_strength", "Mouse pedal strength", "Adjust how much mouse travel is needed to reach full throttle or braking", &|v| if (v - 1.0).abs() < 0.01 { "OMSI".to_string() } else { format!("{:.0}%", v * 100.0) }),
         switch_row(app, "mouse_smooth", "Smooth mouse steering", "The wheel eases after the cursor; off: it follows at once, as in OMSI"),
+        switch_row(app, "mouse_hold", "Hold the cursor while steering", "The wheel reaches its lock past the window's edges; off: the crosshair stays free and without delay, as in OMSI"),
         switch_row(app, "steering_linear", "Steering linearity (keys at OMSI's steady pace)", "Keyboard steering at OMSI's steady pace"),
         switch_row(app, "old_steering", "Old Steering (the wheel stays, turn it back yourself)", "The wheel stays where the keys left it"),
         switch_row(app, "red_steer_spd", "Dynamic steering (slower keys at speed, OMSI's redSteerSpd)", "The steering keys act slower at speed"),
@@ -2692,8 +2729,9 @@ fn world_pages(app: &App) -> Vec<Page> {
         if !app.metar_locked() {
             weather.push(button("Custom weather", "Edit current", "Freeze the weather currently in force and edit it as a custom weather.", "weather_custom"));
         }
-        let cloud = app.session.weather.as_ref().and_then(|w| cloud_index(&w.clouds.0)).map(|i| CLOUD_TYPES[i].1.to_string()).or_else(|| app.session.weather.as_ref().map(|w| w.clouds.0.trim().to_string())).unwrap_or_default();
-        weather.push((row("Clouds", 'o', &cloud, "The kind of clouds in the sky.", None), "cloudkind".to_string()));
+        // how much of the sky is covered: a slider, as the launcher's panel has it (the five
+        // cloud types are the points it runs between)
+        weather.extend(slider_row(app, "cloud_cover", "Cloud cover", "How much of the sky the clouds cover.", &|v| if v <= 0.0 { omsi_ui::tr("Clear sky").into_owned() } else { format!("{:.0} %", v * 100.0) }));
         weather.extend(slider_row(app, "visibility", "Visibility", "How far one can see; less is fog.", &|v| if v >= 1000.0 { format!("{:.1} km", v / 1000.0) } else { format!("{} m", v as i64) }));
         weather.extend(slider_row(app,"brightness","Brightness","Brightness of the custom weather lighting.",&|v|format!("{:.0} %",v*100.0)));
         let kind = app.session.weather.as_ref().map(|w| (w.precip.first().copied().unwrap_or(0.0).max(0.0) as usize).min(PRECIP_KINDS.len() - 1)).unwrap_or(0);
@@ -2704,7 +2742,7 @@ fn world_pages(app: &App) -> Vec<Page> {
         weather.extend(switch_row(app,"snow_road","Snow on road","Treat the road surface as snow-covered."));
         climate.extend(slider_row(app, "temp", "Temperature", "The air temperature.", &|v| format!("{} °C", v as i64)));
         let dew_temp=app.session.weather.as_ref().map(|w|w.temp.0).unwrap_or(15.0);
-        climate.extend(slider_row(app,"humidity","Humidity","Relative humidity of the air.",&|v|format!("{:.0} % · dew {:.0} °C",v,crate::weather_setup::dew_point_c(dew_temp,v))));
+        climate.extend(slider_row(app,"humidity","Humidity","Relative humidity of the air.",&|v|format!("{:.0} % | dew {:.0} °C",v,crate::weather_setup::dew_point_c(dew_temp,v))));
         climate.extend(slider_row(app, "wind_speed", "Wind speed", "How fast the wind blows; it drives the clouds.", &|v| format!("{} m/s", v as i64)));
         climate.extend(slider_row(app, "wind_dir", "Wind direction", "The direction of the wind in degrees (0 is north).", &|v| format!("{}°", v as i64)));
         // the METAR sync on: only its own rows stay (the weather is the report's)
@@ -2940,10 +2978,10 @@ fn switch_driver(app: &mut App, name: &str) {
 fn fleet_numbers(v: &omsi_sim::VehicleInstance) -> Vec<(String, String)> {
     let def = &v.ty.def;
     def.numbers_with_plates()
-        .into_iter()
+        .iter()
         .map(|(n, _)| {
-            let reg = if def.registration_mode == 1 { String::new() } else { def.chosen_plate_of_number(&n) };
-            (n, reg)
+            let reg = if def.registration_mode == 1 { String::new() } else { def.chosen_plate_of_number(n) };
+            (n.clone(), reg)
         })
         .collect()
 }

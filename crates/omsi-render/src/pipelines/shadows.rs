@@ -1,5 +1,6 @@
 //! The sun's (and the street lamps') shadow maps and the pipelines drawing into them.
 
+use super::common::*;
 use super::scene::SceneBase;
 use crate::*;
 
@@ -60,7 +61,7 @@ pub(crate) fn build(device: &wgpu::Device, scene: &SceneBase, shadow_size: u32) 
             immediate_size: 0,
         });
     let make_shadow = |kind: u8, cascade: u8| {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        compile_pipeline(device, &wgpu::RenderPipelineDescriptor {
             label: Some("shadow"),
             layout: Some(&shadow_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -102,7 +103,7 @@ pub(crate) fn build(device: &wgpu::Device, scene: &SceneBase, shadow_size: u32) 
                 compilation_options: Default::default(),
             }),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(device).as_ref(),
         })
     };
     let shadow_clear_pipeline = clear_pipeline(device);
@@ -117,10 +118,12 @@ pub(crate) fn build(device: &wgpu::Device, scene: &SceneBase, shadow_size: u32) 
     if !basic_pipelines() {
         // (the street lamps' tiles, 6 + 2 k + kind)
         log::info!("renderer: compiling the street lamps' shadow shaders");
-        for cascade in 3..=6 {
-            shadow_pipelines.push(make_shadow(PIPE_OPAQUE, cascade));
-            shadow_pipelines.push(make_shadow(PIPE_ALPHA_TEST, cascade));
-        }
+        // (left out alone where the driver fails on them: the lamps then cast no shadows,
+        // `shadow_pipelines.len() > 6`)
+        let lamps = optional_pipeline(device, "the street lamps' shadows", || {
+            (3..=6).flat_map(|cascade| [make_shadow(PIPE_OPAQUE, cascade), make_shadow(PIPE_ALPHA_TEST, cascade)]).collect::<Vec<_>>()
+        });
+        shadow_pipelines.extend(lamps.into_iter().flatten());
     }
     Shadows {
         view: shadow_view,
@@ -133,7 +136,7 @@ pub(crate) fn build(device: &wgpu::Device, scene: &SceneBase, shadow_size: u32) 
 
 fn clear_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
     log::info!("renderer: compiling the shadow clear shader");
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let module = compile_shader(device, wgpu::ShaderModuleDescriptor {
         label: Some("shadow clear"),
         source: wgpu::ShaderSource::Wgsl(
             "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -149,7 +152,7 @@ fn clear_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
         bind_group_layouts: &[],
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    compile_pipeline(device, &wgpu::RenderPipelineDescriptor {
         label: Some("shadow clear"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -169,6 +172,6 @@ fn clear_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
         multisample: Default::default(),
         fragment: None,
         multiview_mask: None,
-        cache: None,
+        cache: crate::pipeline_cache::get(device).as_ref(),
     })
 }

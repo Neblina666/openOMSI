@@ -335,7 +335,7 @@ pub(crate) const HAT_BUTTONS: usize = 128;
 /// and on Windows DirectInput for everything a gamepad is not (`crate::dinput`) - many wheels
 /// never show up in the system's newer interface that gilrs uses there.
 pub(crate) struct Devices {
-    gilrs: Option<Gilrs>,
+    pub(crate) gilrs: Option<Gilrs>,
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     calibration_wheel: Option<crate::evdev_ff::Wheel>,
     /// Whether a gilrs device is also a native evdev constant-force wheel.
@@ -1035,6 +1035,20 @@ impl HeldButtons {
             actions.push((action, false));
         }
     }
+
+    /// Let go of the buttons held down, but not of the latching switches: a switch stays
+    /// where it is while the pause menu is open or the window is in the background, and
+    /// when it comes out later its release still reaches the bus. Let go of with the rest,
+    /// the switch went out in the game at ESC or alt-tab and only came back once it was
+    /// switched off and on again by hand (#1876).
+    fn release_momentary(&mut self, actions: &mut Vec<(String, bool)>) {
+        self.0.retain(|(_, _, action, latching)| {
+            if !latching {
+                actions.push((action.clone(), false));
+            }
+            *latching
+        });
+    }
 }
 
 /// Save only to the writable openOMSI overlay. The original OMSI installation is read-only.
@@ -1094,7 +1108,7 @@ fn gamepad_triggers(axes: &mut Vec<(usize, f32)>, left: f32, right: f32) {
 pub struct Controllers {
     /// Each wheel's suspension travel, settled over a tenth of a second (see `wheel_bump`).
     settled: Vec<f32>,
-    devices: Devices,
+    pub(crate) devices: Devices,
     focused: bool,
     cfg: Vec<DeviceCfg>,
     held: HeldButtons,
@@ -1178,7 +1192,7 @@ impl Controllers {
     }
 
     pub(crate) fn set_editing(&mut self, editing: bool) {
-        if editing && !self.editing { self.held.release(&mut self.actions); }
+        if editing && !self.editing { self.held.release_momentary(&mut self.actions); }
         self.editing = editing;
     }
 
@@ -1194,7 +1208,7 @@ impl Controllers {
         self.devices.set_focus(focused);
         if !focused {
             self.steer = None;
-            self.held.release(&mut self.actions);
+            self.held.release_momentary(&mut self.actions);
             self.raw_buttons.clear();
             self.ff_source_logged = None;
         }
@@ -1526,7 +1540,9 @@ impl Controllers {
             // The wheel force is calculated from the steering axis after its configured
             // reversal, while DirectInput sends forces in the physical axis direction.
             let axis_reversed = force_axis_reversed(cfg, di.force_axis(&name));
-            let force = if feedback_inverted(cfg, self.ff_invert, axis_reversed) { -force } else { force };
+            let inverted = feedback_inverted(cfg, self.ff_invert, axis_reversed) ^ di.force_flipped(&name);
+            let force = if inverted { -force } else { force };
+            crate::dinput::trace_ffb(&f, x, x0, inverted, force);
             if di.set_force(&name, force) {
                 return;
             }
@@ -1676,7 +1692,9 @@ fn wheel_force(f: &FfInput, x: f32, x0: f32, t: &mut f32, k_springs: f32, k_effe
     // a smooth extra torque, tapered away at larger angles. It crosses zero
     // continuously so there is no fixed kick when the wheel passes the centre.
     let centre_return = 0.025 * x / (x * x + 0.004 * 0.004).sqrt() / (1.0 + (x / 0.12).powi(4));
-    let spring = -(spring_strength * x / (0.5 + 1.15 * x.abs()) + centre_return) * rolling;
+    // A physical wheel needs a middle even when parked: half the centring is there at a
+    // standstill, the rest builds up as the bus rolls.
+    let spring = -(spring_strength * x / (0.5 + 1.15 * x.abs()) + centre_return) * (0.5 + 0.5 * rolling);
     let road_align = -(f.lateral_accel / 9.81).clamp(-0.45, 0.45) * 0.25 * (v / 5.0).clamp(0.0, 1.0) * rolling;
     // Assisted steering should not demand ever more hand force near full lock.
     let lock_assist = 1.0 / (1.0 + 0.55 * x * x);
@@ -1900,7 +1918,11 @@ pub(crate) fn key_bitmap_buttons(bitmap: &str) -> Vec<u32> {
 
 #[cfg(any(target_os = "linux", test))]
 fn button_index(declared: &[u32], code: u32) -> Option<usize> {
-    if declared.iter().all(|c| code_button(*c).is_some()) {
+    // (the table's numbers when every button is in it - but not for a device whose buttons
+    // are all BTN_TRIGGER_HAPPY ones: its first button is the table's 17th, and it listed
+    // sixteen buttons it does not have, #1879; joydev and DirectInput count it from 1)
+    let in_low_table = |c: &u32| (0x100..=0x13e).contains(&(c & 0xFFFF));
+    if declared.iter().all(|c| code_button(*c).is_some()) && declared.iter().any(in_low_table) {
         return None;
     }
     declared.iter().position(|c| *c == code)
@@ -2274,6 +2296,10 @@ mod button_tests {
             let pad: Vec<u32> = vec![0x130, 0x131, 0x133, 0x134];
             assert_eq!(super::button_index(&pad, 0x133), None);
         }
+        // a button box of BTN_TRIGGER_HAPPY codes only: from 0, no sixteen ghosts (#1879)
+        let panel: Vec<u32> = (0x2c0..0x2c8).collect();
+        assert_eq!(super::button_index(&panel, 0x2c0), Some(0));
+        assert_eq!(super::button_count(&panel), 8);
     }
 
     #[test]
@@ -2319,14 +2345,17 @@ mod button_tests {
     }
 
     #[test]
-    fn a_parked_wheel_is_not_pulled_to_the_middle() {
+    fn a_parked_wheel_has_a_gentle_middle() {
         let mut t = 0.0;
         for kmh in [-0.5, -0.1, 0.0, 0.1, 0.5] {
-            // Include residual lateral acceleration from the body's suspension.
+            // Residual lateral acceleration from the body's suspension is no force when parked.
             let f = super::FfInput { on: true, kmh, lateral_accel: 3.0, dt: 0.016, ..Default::default() };
-            for x in [-1.0, -0.5, 0.0, 0.5, 1.0] {
-                let force = super::wheel_force(&f, x, x, &mut t, 1.0, 0.0);
-                assert_eq!(force, 0.0, "kmh={kmh}, steering={x}");
+            assert_eq!(super::wheel_force(&f, 0.0, 0.0, &mut t, 1.0, 0.0), 0.0, "kmh={kmh}");
+            for x in [0.2, 0.5, 1.0] {
+                let right = super::wheel_force(&f, x, x, &mut t, 1.0, 0.0);
+                let left = super::wheel_force(&f, -x, -x, &mut t, 1.0, 0.0);
+                assert!(right < -0.02 && right > -0.2, "kmh={kmh}, steering={x}: {right}");
+                assert_eq!(right, -left, "kmh={kmh}, steering={x}");
             }
         }
     }
@@ -2338,8 +2367,8 @@ mod button_tests {
         for x in [-0.5, 0.5] {
             let right = super::wheel_force(&f, x, x - 0.01, &mut t, 1.0, 0.0);
             let left = super::wheel_force(&f, x, x + 0.01, &mut t, 1.0, 0.0);
-            assert!(right < 0.0 && left > 0.0, "{right} {left}");
-            assert!((right + left).abs() < 1e-6, "{right} {left}");
+            // (the parked centring adds the same pull to both)
+            assert!(right < left, "{right} {left}");
         }
     }
 
@@ -3020,6 +3049,22 @@ mod hot_reload_tests {
         assert_eq!(c.actions, vec![("horn".into(), true), ("horn".into(), false)]);
         c.set_editing(false);
         assert!(!c.editing);
+    }
+
+    #[test]
+    fn a_latching_switch_stays_in_through_the_menu_and_the_focus() {
+        let cfg = vec![DeviceCfg { name: "Test wheel".into(), buttons: vec![(String::new(), String::new()), ("bus_stopbrake".into(), String::new()), ("bus_horn".into(), String::new())], latching: vec![1], ..Default::default() }];
+        let mut held = HeldButtons::default();
+        let mut actions = Vec::new();
+        held.event(&cfg, "Test wheel", 1, true, &mut actions);
+        held.event(&cfg, "Test wheel", 2, true, &mut actions);
+        actions.clear();
+        held.release_momentary(&mut actions);
+        assert_eq!(actions, vec![("bus_horn".to_string(), false)]);
+        actions.clear();
+        // switched out later: its release and the latch's way back still come
+        held.event(&cfg, "Test wheel", 1, false, &mut actions);
+        assert_eq!(actions.first(), Some(&("bus_stopbrake".to_string(), false)));
     }
 
     #[test]

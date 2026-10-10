@@ -90,7 +90,7 @@ impl App {
                 let fov_setting = self.settings.fov;
                 // Eased Space return (F1): look + zoom glide home on the
                 // same ease-out as the viewpoint switch instead of
-                // teleporting — ahead of the zoom read below, so the
+                // teleporting - ahead of the zoom read below, so the
                 // frame draws this frame's zoom, not the last one's.
                 // The glide belongs to the camera it started from:
                 // a switch mid-glide finalizes that camera straight
@@ -227,7 +227,7 @@ impl App {
             }
         } else if let Some((.., key)) = self.cam.f1_reset.take() {
             // camera changed mid-glide, or F1 left: the return
-            // is done for the camera it started from — store
+            // is done for the camera it started from - store
             // it straight ahead, never a partial angle.
             self.cam.view_looks.insert(key, (0.0, 0.0));
             self.cam.view_zoom.remove("driver");

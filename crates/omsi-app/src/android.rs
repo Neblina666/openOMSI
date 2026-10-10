@@ -675,3 +675,23 @@ pub(crate) fn open_url(url: &str) {
         Ok(())
     });
 }
+
+/// The media scanner told of a picture at once (`MediaScannerConnection.scanFile`): the
+/// gallery shows it without waiting for the next scan.
+pub(crate) fn scan_media(path: &std::path::Path) {
+    let p = path.to_string_lossy().into_owned();
+    let _ = with_activity(|env, activity| {
+        let s = env.new_string(&p)?;
+        let paths = env.new_object_array(1, "java/lang/String", &s)?;
+        let mime = env.new_string("image/png")?;
+        let mimes = env.new_object_array(1, "java/lang/String", &mime)?;
+        let none = jni::objects::JObject::null();
+        env.call_static_method(
+            "android/media/MediaScannerConnection",
+            "scanFile",
+            "(Landroid/content/Context;[Ljava/lang/String;[Ljava/lang/String;Landroid/media/MediaScannerConnection$OnScanCompletedListener;)V",
+            &[activity.into(), (&paths).into(), (&mimes).into(), (&none).into()],
+        )?;
+        Ok(())
+    });
+}

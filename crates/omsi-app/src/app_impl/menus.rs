@@ -96,6 +96,11 @@ impl App {
     /// The mouse wheel over the game menu: the chosen line moves (the menu scrolls with it),
     /// in a list the same; no wrapping round.
     pub(crate) fn menu_wheel(&mut self, amount: f32) {
+        // (the pause menu of the launcher's toolkit scrolls what is under the mouse itself)
+        if self.shell_takes_mouse() {
+            self.shell.wheel(amount);
+            return;
+        }
         // (an open drop-down scrolls, not the window under it)
         if self.menus.dropdown.is_some() {
             self.menus.wheel_acc += amount;
@@ -190,6 +195,10 @@ impl App {
             "shot" => {
                 self.close_game_menu();
                 self.take_screenshot();
+            }
+            "photo" => {
+                self.close_game_menu();
+                self.enter_photo();
             }
             "skipstop" => {
                 self.close_game_menu();
@@ -354,7 +363,7 @@ pub(crate) const SERVER_GAME_MENU: [(&str, &str); 8] = [
     ("vehicle", "Vehicle options..."),
     ("world", "World options..."),
     ("map", "City map"),
-    ("shot", "Screenshot"),
+    ("photo", "Photo mode"),
     ("quit", "Leave the server"),
 ];
 
@@ -483,6 +492,6 @@ pub(crate) const GAME_MENU: [(&str, &str); 15] = [
     ("save", "Save the situation"),
     ("saveslot", "Save to a new slot"),
     ("load", "Load the quicksave"),
-    ("shot", "Screenshot"),
+    ("photo", "Photo mode"),
     ("quit", "End the session"),
 ];

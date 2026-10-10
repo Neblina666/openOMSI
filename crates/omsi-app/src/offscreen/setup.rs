@@ -23,6 +23,7 @@ impl<'a> Offscreen<'a> {
             .unwrap_or((1600, 900));
         let view_aspect = w as f32 / h.max(1) as f32;
         let settings = settings::Settings::load();
+        crate::rain::set_quality(&settings.rain_quality);
         let instance = graphics_instance();
         let mut renderer = pollster::block_on(Renderer::new_with(
             &instance,
@@ -238,6 +239,7 @@ impl<'a> Offscreen<'a> {
         let wetness = initial_wetness(&weather);
         let cabin_air = crate::condensation::CabinAir::new();
         let real_time = RealTime::default();
+        let recorder = record::Recorder::new(out, player.as_mut(), &args.root);
         Ok(Offscreen {
             args,
             out,
@@ -291,6 +293,7 @@ impl<'a> Offscreen<'a> {
             ground_gap,
             spray,
             real_time,
+            recorder,
         })
     }
 }
@@ -413,6 +416,7 @@ fn new_humans(
         h.players_only = args.server.is_some() && player.is_none();
         h.exact_fare = settings.exact_fare;
         h.boarding = settings.boarding.clone();
+        h.stand_chance = settings.standing_chance;
         h.voices = match settings.pax_voices.as_str() { "off" => 2, "tickets" => 1, _ => 0 };
         if let Some(p) = player.as_mut() {
             h.set_cabin(&mut p.vehicle);

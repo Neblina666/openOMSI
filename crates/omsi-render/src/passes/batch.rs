@@ -3,6 +3,15 @@
 
 use super::*;
 
+fn sort_blended_draws(keyed: &mut [(u8, f32, usize)], draw_order: impl Fn(usize) -> u64) {
+    keyed.sort_unstable_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(b.1.total_cmp(&a.1))
+            .then_with(|| draw_order(a.2).cmp(&draw_order(b.2)))
+            .then(a.2.cmp(&b.2))
+    });
+}
+
 /// The batches of the camera's passes (the shadow casters' are planned apart, see
 /// `plan_shadow_casters`).
 pub(crate) struct DrawPlan {
@@ -460,7 +469,9 @@ impl Renderer {
         // (a total order even where a distance is NaN - an instance at a NaN position:
         // partial_cmp's "equal" for it broke the sort's order, and since Rust 1.81 the
         // sort panics on that, which ended the game)
-        keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
+        // AI meshes reuse slots from separate pools by material-slot count. Their ids
+        // can put display glass between two text rows; keep the model's creation order.
+        sort_blended_draws(&mut keyed, |i| scene.instances[i].draw_order);
         keyed
     }
 
@@ -539,5 +550,55 @@ impl Renderer {
         } else {
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sort_blended_draws;
+    use crate::{AlphaMode, MeshData, RenderOptions, Renderer};
+    use glam::{DVec3, Mat4, Vec3};
+
+    #[test]
+    fn recycled_display_layers_keep_model_order_after_distance_and_camera_rank() {
+        // Glass (three material slots) reused id 1; the text rows (one slot each)
+        // reused ids 0 and 2. Slot order would tint only the upper row.
+        let order = [11, 10, 12, 13, 14];
+        let mut draws = vec![(0, 5.0, 2), (2, 20.0, 4), (0, 5.0, 0), (0, 9.0, 3), (0, 5.0, 1)];
+        sort_blended_draws(&mut draws, |i| order[i]);
+        assert_eq!(draws.iter().map(|d| d.2).collect::<Vec<_>>(), vec![3, 1, 0, 2, 4]);
+    }
+
+    #[test]
+    #[ignore = "requires a graphics adapter; run with --ignored on a GPU host"]
+    fn recycled_instances_sort_by_new_model_creation_order() {
+        let adapter = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let renderer = pollster::block_on(Renderer::new_with(
+            &adapter, None, Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+            RenderOptions { msaa: 1, shadow_size: 1024, ..Default::default() },
+        )).expect("test renderer");
+        let mut scene = renderer.new_scene();
+        let material = renderer.add_material(&mut scene, None, AlphaMode::Blend, [1.0; 4], true);
+        let data = MeshData {
+            positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+            normals: vec![Vec3::Z; 3], uvs: vec![glam::Vec2::ZERO; 3],
+            indices: vec![0, 1, 2], ranges: vec![(0, 3, 0)], ..Default::default()
+        };
+        let text = renderer.add_mesh(&mut scene, &data);
+        let glass = renderer.add_mesh(&mut scene, &MeshData {
+            ranges: vec![(0, 3, 0), (0, 3, 1), (0, 3, 2)], ..data
+        });
+        let upper = renderer.add_instance(&mut scene, text, DVec3::ZERO, Mat4::IDENTITY, vec![material]);
+        let pane = renderer.add_instance(&mut scene, glass, DVec3::ZERO, Mat4::IDENTITY, vec![material; 3]);
+        let lower = renderer.add_instance(&mut scene, text, DVec3::ZERO, Mat4::IDENTITY, vec![material]);
+        // A new bus creates its glass first, then its two rows, in different slot pools.
+        for (mesh, slots, into) in [(glass, 3, pane), (text, 1, upper), (text, 1, lower)] {
+            renderer.remove_instance(&mut scene, into);
+            let new = renderer.add_instance(&mut scene, mesh, DVec3::ZERO, Mat4::IDENTITY, vec![material; slots]);
+            assert_eq!(renderer.recycle_instance(&mut scene, new, into), into);
+        }
+        let mut draws = vec![(0, 5.0, upper), (0, 5.0, pane), (0, 5.0, lower)];
+        sort_blended_draws(&mut draws, |i| scene.instances[i].draw_order);
+        assert_eq!(draws.iter().map(|d| d.2).collect::<Vec<_>>(), vec![pane, upper, lower]);
     }
 }

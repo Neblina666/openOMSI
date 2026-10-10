@@ -75,11 +75,20 @@ pub struct Showroom {
     dirty: bool,
     /// Bumped whenever `target` was made anew (the interface binds it again).
     pub generation: u64,
+    /// Bumped at every drawing of the picture (the launcher shows an unchanged one only once).
+    pub drawn: u64,
 }
 
 /// Names the bus whose preview is being read and placed, until it is in the picture.
 fn placing_mark() -> PathBuf {
     omsi_launcher_lib::data_dir().join("showroom-placing.txt")
+}
+
+/// The launcher ends in order (closed, or a test's time is up) while a preview is being
+/// placed: that is no hang, and the bus must not be left out of the previews from then on
+/// (a test ended mid-placing put the bus it showed into `showroom-skip.txt`).
+pub(super) fn clear_placing_mark() {
+    let _ = std::fs::remove_file(placing_mark());
 }
 
 fn args_for(look: &Look) -> Args {
@@ -133,6 +142,7 @@ impl Showroom {
             target: None,
             dirty: true,
             generation: 0,
+            drawn: 0,
         }
     }
 
@@ -359,6 +369,7 @@ impl Showroom {
         }
         if self.dirty {
             self.dirty = false;
+            self.drawn += 1;
             let view = self.target.as_ref().unwrap().1.clone();
             self.render(renderer, &view, w, h);
         }

@@ -33,6 +33,13 @@ pub struct PagesView {
     /// (section, index) of the binding waiting for a key.
     pub capturing: Option<(usize, usize)>,
     pub drop_hover: bool,
+    /// The Mods page's list: its search, its filter (see `MOD_FILTERS`), and the mod whose
+    /// deletion is asked about.
+    pub mod_search: String,
+    pub mod_filter: usize,
+    pub mod_confirm: Option<String>,
+    /// The mods opened to show what they hold, folder by folder.
+    pub mod_open: std::collections::HashSet<String>,
     pub setup_root: Option<String>,
     pub setup_game: Option<String>,
     /// The Controls page's tab: 0 the keyboard, 1 the game controllers.
@@ -197,7 +204,7 @@ pub fn profile(l: &mut Launcher, area: Rect) {
     let tx = card.x + 142.0;
     l.ui.text_in(&format!("{}{}", p.name, if p.exists { "" } else { " (no personnel file yet)" }), Rect::new(tx, card.y + 34.0, card.w - 160.0, 30.0), 24.0, Weight::Black, TEXT, Align::Left);
     l.ui.progress(Rect::new(tx, card.y + 76.0, card.w - 170.0, 10.0), shown, false);
-    l.ui.text_in(&format!("{} XP · {} to level {}", p.xp, (p.next_level_xp - p.xp).max(0), p.level + 1), Rect::new(tx, card.y + 94.0, card.w - 160.0, 18.0), 12.5, Weight::Medium, TEXT_DIM, Align::Left);
+    l.ui.text_in(&format!("{} XP | {} to level {}", p.xp, (p.next_level_xp - p.xp).max(0), p.level + 1), Rect::new(tx, card.y + 94.0, card.w - 160.0, 18.0), 12.5, Weight::Medium, TEXT_DIM, Align::Left);
     let hours = |h: f64| format!("{} h {:02} min", h.floor() as i64, ((h - h.floor()) * 60.0).round() as i64);
     let stats = [
         ("schedule", hours(p.hours), "hours driven"),
@@ -242,11 +249,11 @@ pub fn profile(l: &mut Launcher, area: Rect) {
             let r = Rect::new(v.x + 6.0, v.y + k as f32 * rh, v.w - 16.0, rh - 6.0);
             ui.p().rounded(r, 9.0, Color::WHITE.alpha(0.04));
             let title = match &s.line {
-                Some(line) => format!("Line {line}{} · {}", s.tour.as_ref().map(|t| format!(" / {t}")).unwrap_or_default(), short_map(&s.map)),
-                None => format!("Free drive · {}", short_map(&s.map)),
+                Some(line) => format!("Line {line}{} | {}", s.tour.as_ref().map(|t| format!(" / {t}")).unwrap_or_default(), short_map(&s.map)),
+                None => format!("Free drive | {}", short_map(&s.map)),
             };
             ui.text_in(&title, Rect::new(r.x + 12.0, r.y + 6.0, r.w - 130.0, 20.0), 13.0, Weight::Bold, TEXT, Align::Left);
-            ui.text_in(&format!("{} · {:.1} km · {} stops · {} tickets · {} crashes", s.bus.rsplit('/').next().unwrap_or(""), s.metres / 1000.0, s.stops, s.tickets, s.crashes), Rect::new(r.x + 12.0, r.y + 28.0, r.w - 130.0, 18.0), 11.0, Weight::Regular, TEXT_DIM, Align::Left);
+            ui.text_in(&format!("{} | {:.1} km | {} stops | {} tickets | {} crashes", s.bus.rsplit('/').next().unwrap_or(""), s.metres / 1000.0, s.stops, s.tickets, s.crashes), Rect::new(r.x + 12.0, r.y + 28.0, r.w - 130.0, 18.0), 11.0, Weight::Regular, TEXT_DIM, Align::Left);
             let when = chrono_like(s.time);
             ui.text_in(&when, Rect::new(r.right() - 120.0, r.y + 6.0, 110.0, 20.0), 11.5, Weight::Medium, TEXT_SOFT, Align::Right);
             ui.text_in(&hours_short(s.seconds / 3600.0), Rect::new(r.right() - 120.0, r.y + 28.0, 110.0, 18.0), 11.5, Weight::Medium, ACCENT, Align::Right);
@@ -620,6 +627,7 @@ fn graphics_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) ->
     if matches!(get(s, "graphics").as_str(), Some("enhanced" | "enhanced_plus")) && get(s, "clouds").as_bool() != Some(false) {
         sel_setting(ui, s, dirty, "s-cloud-quality", c.row(), "Cloud quality", "cloud_quality", &[("high", "High"), ("low", "Low")]);
     }
+    sel_setting(ui, s, dirty, "s-rain-quality", c.row(), "Rain quality", "rain_quality", &[("high", "High"), ("medium", "Medium"), ("low", "Low")]);
     toggle_setting(ui, s, dirty, c.row(), "Windy trees", "windy_trees");
     let left = c.used();
     let mut c = Col::new(ui, cols[1], "Display");
@@ -699,6 +707,7 @@ fn driving_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
         *dirty = 0.3;
     }
     toggle_setting(ui, s, dirty, c.row(), "Smooth mouse steering (off: the wheel follows the cursor at once, as in OMSI)", "mouse_smooth");
+    toggle_setting(ui, s, dirty, c.row(), "Hold the cursor while the mouse steers (off: the crosshair stays free, the window's edges are the lock)", "mouse_hold");
     toggle_setting(ui, s, dirty, c.row(), "A right click ends the mouse steering (as in OMSI)", "mouse_right_off");
     toggle_setting(ui, s, dirty, c.row(), "Indicators cancel themselves (as the bus's script does)", "blinker_cancel");
     toggle_setting(ui, s, dirty, c.row(), "The keyboard brake stays on until the throttle (as in OMSI)", "brake_hold");
@@ -1072,6 +1081,12 @@ fn sound_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) -> [f
         }
     }
     toggle_setting(ui, s, dirty, c.row(), "Doppler effect", "doppler");
+    toggle_setting(ui, s, dirty, c.row(), "Ambience (places, weather, nature, town)", "ambient");
+    let mut amb = get(s, "vol_ambient").as_f64().unwrap_or(0.8) as f32;
+    if ui.slider("s-volamb", c.row(), &mut amb, 0.0, 1.0, 0.05, "Ambience volume", &|v| format!("{:.0}%", v * 100.0)) {
+        s["vol_ambient"] = json!((amb * 100.0).round() / 100.0);
+        *dirty = 0.3;
+    }
     sel_setting(ui, s, dirty, "s-voices", c.row(), "Passenger voices", "pax_voices", &[("all", "Greetings and tickets"), ("tickets", "Only the ticket asked for"), ("off", "Silent")]);
     [c.used(), radio_stations(ui, cols[1])]
 }
@@ -1095,7 +1110,7 @@ fn radio_stations(ui: &mut Ui, r: Rect) -> f32 {
             let row = c.row();
             let nw = (row.w * 0.3).round();
             changed |= ui.text_input(&format!("radio-name-{k}"), Rect::new(row.x, row.y, nw, row.h), name, "Name", None);
-            changed |= ui.text_input(&format!("radio-url-{k}"), Rect::new(row.x + nw + 8.0, row.y, row.w - nw - 8.0 - 36.0, row.h), address, "https://…", None);
+            changed |= ui.text_input(&format!("radio-url-{k}"), Rect::new(row.x + nw + 8.0, row.y, row.w - nw - 8.0 - 36.0, row.h), address, "https://...", None);
             if ui.icon_button(&format!("radio-del-{k}"), Vec2::new(row.right() - 16.0, row.center().y), 14.0, "delete", "Remove this station") {
                 remove = Some(k);
             }
@@ -1120,6 +1135,8 @@ fn radio_stations(ui: &mut Ui, r: Rect) -> f32 {
 fn gameplay_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, cols: [Rect; 2]) -> [f32; 2] {
     let mut c = Col::new(ui, cols[0], "Passengers");
     sel_setting(ui, s, dirty, "s-board", c.row(), "Boarding", "boarding", &[("auto", "Pay and take the ticket"), ("pay", "The driver sells the ticket"), ("walk", "Just walk in")]);
+    sel_setting(ui, s, dirty, "s-stand", c.row(), "Standing passengers", "standing_chance", &[("0", "Never"), ("5", "5%"), ("10", "10%"), ("25", "25%"), ("50", "50%"), ("100", "Always")]);
+    sel_setting(ui, s, dirty, "s-pax-animation", c.row(), "Passenger animations", "passenger_animation", &[("original", "Original OMSI"), ("enhanced", "Procedural (experimental)")]);
     toggle_setting(ui, s, dirty, c.row(), "Passengers pay the exact fare", "exact_fare");
     let mut pd = get(s, "pax_density").as_f64().unwrap_or(1.0) as f32;
     if ui.slider("s-pax", c.row(), &mut pd, 0.0, 2.0, 0.1, "How many passengers", &|v| format!("{:.0}%", v * 100.0)) {
@@ -1259,7 +1276,7 @@ fn general_tab(ui: &mut Ui, s: &mut Value, dirty: &mut f32, out: &mut Outside, c
         use crate::updater::Status;
         let r = c.row();
         let busy = matches!(out.update, Status::Checking | Status::Downloading { .. } | Status::Installing(_) | Status::WaitingForInstaller(_) | Status::Restarting(_));
-        if ui.button("s-upd-check", Rect::new(r.x, r.y, 150.0, r.h), if busy { "Checking…" } else { "Check now" }, Some("refresh"), ButtonKind::Normal) && !busy {
+        if ui.button("s-upd-check", Rect::new(r.x, r.y, 150.0, r.h), if busy { "Checking..." } else { "Check now" }, Some("refresh"), ButtonKind::Normal) && !busy {
             out.check_updates = true;
         }
         let text = match &out.update {
@@ -1365,6 +1382,7 @@ fn known_action(a: &str) -> Option<String> {
         ("sim_pause", "Pause"),
         ("open_menu", "Open / close the main menu"),
         ("screenshot", "Screenshot"),
+        ("photo_mode", "Photo mode"),
         ("quicksave", "Quicksave"),
         ("toggel_mouse_ctrl", "Toggle mouse steering"),
         ("toggel_ctrler", "Toggle game controllers"),
@@ -1451,7 +1469,7 @@ pub fn controls(l: &mut Launcher, area: Rect) {
         // a name typed in the filter is added, below)
         let add_w = if sec != 0 { 0.0 } else if inner.w < 500.0 { 104.0 } else { 124.0 };
         let filter_w = if sec != 0 { inner.w } else { (inner.w - add_w - GAP).max(120.0) };
-        l.ui.text_input(&format!("kb-filter-{sec}"), Rect::new(inner.x, inner.y + 18.0, filter_w, 34.0), &mut filter, "Filter…", Some("search"));
+        l.ui.text_input(&format!("kb-filter-{sec}"), Rect::new(inner.x, inner.y + 18.0, filter_w, 34.0), &mut filter, "Filter...", Some("search"));
         if sec == 0 && l.ui.button(&format!("kb-add-{sec}"), Rect::new(inner.right() - add_w, inner.y + 18.0, add_w, 34.0), "Add binding", Some("add"), ButtonKind::Normal) {
             l.pages.kb_picker = Some(sec);
             l.pages.kb_picker_filter.clear();
@@ -1529,7 +1547,7 @@ pub fn controls(l: &mut Launcher, area: Rect) {
                 let base = if waiting { ACCENT.alpha(0.25 + 0.15 * (time * 6.0).sin().abs()) } else if *clash { DANGER.alpha(0.22) } else { Color::WHITE.alpha(if h { 0.12 } else { 0.07 }) };
                 ui.p().rounded(kr, 6.0, base);
                 ui.p().rounded_border(kr, 6.0, 1.0, if waiting { ACCENT } else if *clash { DANGER } else { Color::WHITE.alpha(0.1) });
-                ui.text_in(if waiting { "press a key…" } else { keyn }, kr, 12.0, Weight::Bold, if *clash { DANGER.lighten(0.3) } else { TEXT }, Align::Center);
+                ui.text_in(if waiting { "press a key..." } else { keyn }, kr, 12.0, Weight::Bold, if *clash { DANGER.lighten(0.3) } else { TEXT }, Align::Center);
                 let dr = Rect::new(rr.right() - 64.0, rr.y + 5.0, 26.0, rr.h - 10.0);
                 let (hd, _, cd) = ui.interact(id_of(&format!("kb-{sec}-{i}-clear")), dr);
                 ui.icon("delete", dr.center(), 16.0, if hd { TEXT } else { TEXT_FAINT });
@@ -1917,7 +1935,7 @@ fn game_controllers(l: &mut Launcher, body: Rect) {
         }
     }
     let add_r = Rect::new(inner.x, inner.bottom() - 40.0, 260.0, 36.0);
-    if l.ui.button("pad-add-button", add_r, if pv.capturing { "Press a button on the device…" } else { "Add a button" }, Some("add"), ButtonKind::Normal) {
+    if l.ui.button("pad-add-button", add_r, if pv.capturing { "Press a button on the device..." } else { "Add a button" }, Some("add"), ButtonKind::Normal) {
         pv.capturing = !pv.capturing;
     }
     // a device no longer used (a wheel sold, one that came along in OMSI's own file) leaves
@@ -2069,7 +2087,7 @@ fn feedback_setup(
                 Some(Ok(false)) => ("Direction detected: normal", OK),
                 Some(Ok(true)) => ("Direction detected: inverted", OK),
                 Some(Err(message)) => (message, DANGER),
-                None => ("Testing: keep your hands off the wheel…", TEXT_SOFT),
+                None => ("Testing: keep your hands off the wheel...", TEXT_SOFT),
             };
             y += ui.paragraph(message, Vec2::new(r.x, y), r.w, 13.0, Weight::Medium, color) + 12.0;
         }
@@ -2278,21 +2296,21 @@ pub fn sessions(l: &mut Launcher, area: Rect) {
             l.ui.p().circle(c, 6.0 + 3.0 * pulse, OK.alpha(0.25));
         }
         l.ui.p().circle(c, 6.0, if running { OK } else { TEXT_FAINT });
-        let duty = i.line.as_ref().map(|ln| format!(" · line {ln}{}", i.tour.as_ref().map(|t| format!(" / {t}")).unwrap_or_default())).unwrap_or_default();
-        l.ui.text_in(&format!("{} · {}{duty}", short_map(&i.map), short_bus(&i.bus)), Rect::new(r.x + 42.0, r.y + 16.0, r.w - 260.0, 24.0), 16.0, Weight::Black, TEXT, Align::Left);
+        let duty = i.line.as_ref().map(|ln| format!(" | line {ln}{}", i.tour.as_ref().map(|t| format!(" / {t}")).unwrap_or_default())).unwrap_or_default();
+        l.ui.text_in(&format!("{} | {}{duty}", short_map(&i.map), short_bus(&i.bus)), Rect::new(r.x + 42.0, r.y + 16.0, r.w - 260.0, 24.0), 16.0, Weight::Black, TEXT, Align::Left);
         let status = if running {
-            if l.state.stopping.contains(&i.pid) || i.stopping.is_some() { "stopping - saving the run…".to_string() } else { format!("running for {}", ago(i.started)) }
+            if l.state.stopping.contains(&i.pid) || i.stopping.is_some() { "stopping - saving the run...".to_string() } else { format!("running for {}", ago(i.started)) }
         } else {
             let how = if i.exit_code == Some(0) { String::new() } else if i.killed { " (killed - it did not end by itself, the run is not saved)".into() } else { i.exit_code.map(|c| format!(" (exit code {c})")).unwrap_or_default() };
             format!("ended{how}")
         };
-        l.ui.text_in(&format!("{status} · driver {}", i.profile), Rect::new(r.x + 42.0, r.y + 42.0, r.w - 60.0, 18.0), 12.0, Weight::Regular, TEXT_DIM, Align::Left);
+        l.ui.text_in(&format!("{status} | driver {}", i.profile), Rect::new(r.x + 42.0, r.y + 42.0, r.w - 60.0, 18.0), 12.0, Weight::Regular, TEXT_DIM, Align::Left);
         l.ui.text_in(&i.last_line, Rect::new(r.x + 42.0, r.y + 62.0, r.w - 60.0, 18.0), 11.5, Weight::Regular, TEXT_FAINT, Align::Left);
         // buttons
         let bw = 110.0;
         if running {
             let stopping = l.state.stopping.contains(&i.pid);
-            if l.ui.button(&format!("stop-{}", i.pid), Rect::new(r.right() - 18.0 - bw, r.y + 14.0, bw, 34.0), if stopping { "Stopping…" } else { "Stop" }, Some("close"), ButtonKind::Danger) && !stopping {
+            if l.ui.button(&format!("stop-{}", i.pid), Rect::new(r.right() - 18.0 - bw, r.y + 14.0, bw, 34.0), if stopping { "Stopping..." } else { "Stop" }, Some("close"), ButtonKind::Danger) && !stopping {
                 actions.push((i.pid, "stop"));
             }
         }
@@ -2319,7 +2337,7 @@ pub fn sessions(l: &mut Launcher, area: Rect) {
             } else if connected {
                 format!("connected to {}", lan.get("host_name").and_then(|x| x.as_str()).unwrap_or(""))
             } else {
-                "connecting…".to_string()
+                "connecting...".to_string()
             };
             l.ui.text_in(&format!("Multiplayer: {text}"), Rect::new(r.x + 42.0, yy, r.w - 60.0, 20.0), 12.5, Weight::Medium, if connected { OK } else { WARN }, Align::Left);
             yy += 24.0;
@@ -2330,8 +2348,8 @@ pub fn sessions(l: &mut Launcher, area: Rect) {
             for p in &players {
                 let s = |k: &str| p.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let pax = p.get("passengers").and_then(|x| x.as_i64()).unwrap_or(0);
-                let dest = if s("destination").is_empty() { String::new() } else { format!(" · {} → {}", s("line"), s("destination")) };
-                l.ui.text_in(&format!("{} · {}{dest}{} · {}", s("name"), short_bus(&s("bus")), if pax > 0 { format!(" · {pax} passengers") } else { String::new() }, s("where")), Rect::new(r.x + 42.0, yy, r.w - 60.0, 18.0), 12.5, Weight::Medium, TEXT_SOFT, Align::Left);
+                let dest = if s("destination").is_empty() { String::new() } else { format!(" | {} → {}", s("line"), s("destination")) };
+                l.ui.text_in(&format!("{} | {}{dest}{} | {}", s("name"), short_bus(&s("bus")), if pax > 0 { format!(" | {pax} passengers") } else { String::new() }, s("where")), Rect::new(r.x + 42.0, yy, r.w - 60.0, 18.0), 12.5, Weight::Medium, TEXT_SOFT, Align::Left);
                 yy += 20.0;
             }
         }
@@ -2390,9 +2408,20 @@ pub fn mods(l: &mut Launcher, area: Rect) {
         l.state.load_mods();
     }
     let body = l.page_title(area, "Mods", "A bus, a map, scenery, a whole OMSI folder - as a folder or a .zip, .7z or .rar. The original OMSI 2 folder is never written to.");
-    let cols = 3;
-    let cw = (body.w - GAP * 2.0 * (cols as f32 - 1.0)) / cols as f32;
-    let colr = |k: usize| Rect::new(body.x + k as f32 * (cw + GAP * 2.0), body.y, cw, body.h);
+    // (installing and the installs on the left, the list of every mod taking the rest)
+    let side = (body.w * 0.27).clamp(280.0, 380.0);
+    let list_w = body.w - 2.0 * (side + GAP * 2.0);
+    let colr = |k: usize| match k {
+        0 => Rect::new(body.x, body.y, side, body.h),
+        1 => Rect::new(body.x + side + GAP * 2.0, body.y, side, body.h),
+        _ => Rect::new(body.x + 2.0 * (side + GAP * 2.0), body.y, list_w, body.h),
+    };
+    // (asked again once an install has finished: the list shows what it put there)
+    let done = l.state.jobs.iter().filter(|j| j.finished.is_some()).count();
+    if done != l.state.mods_jobs_seen {
+        l.state.mods_jobs_seen = done;
+        l.state.load_mods();
+    }
     // install
     let c0 = colr(0);
     l.ui.panel(c0);
@@ -2442,7 +2471,7 @@ pub fn mods(l: &mut Launcher, area: Rect) {
         l.ui.p().circle(p, 1.3, ACCENT.alpha(0.35 + 0.5 * t));
     }
     l.ui.icon("upload", Vec2::new(drop.center().x, drop.y + 38.0), 30.0, ACCENT.alpha(0.6 + 0.4 * t));
-    l.ui.text_in("…or drop a mod folder or .zip, .7z or .rar onto this window", Rect::new(drop.x, drop.y + 62.0, drop.w, 30.0), 12.5, Weight::Medium, TEXT_SOFT, Align::Center);
+    l.ui.text_in("...or drop a mod folder or .zip, .7z or .rar onto this window", Rect::new(drop.x, drop.y + 62.0, drop.w, 30.0), 12.5, Weight::Medium, TEXT_SOFT, Align::Center);
     y += 122.0;
     if !l.state.mod_path.is_empty() {
         let p = l.state.mod_path.clone();
@@ -2502,7 +2531,7 @@ pub fn mods(l: &mut Launcher, area: Rect) {
             if running {
                 let frac = if j.bytes_total > 0 { j.bytes_done as f32 / j.bytes_total as f32 } else if j.files_total > 0 { j.files_done as f32 / j.files_total as f32 } else { 0.0 };
                 ui.progress(Rect::new(r.x + 12.0, yy, r.w - 24.0, 8.0), frac, true);
-                ui.text_in(&format!("{} / {} files · {} / {}", j.files_done, j.files_total, fmt_bytes(j.bytes_done), fmt_bytes(j.bytes_total)), Rect::new(r.x + 12.0, yy + 10.0, r.w - 24.0, 16.0), 11.0, Weight::Regular, TEXT_DIM, Align::Left);
+                ui.text_in(&format!("{} / {} files | {} / {}", j.files_done, j.files_total, fmt_bytes(j.bytes_done), fmt_bytes(j.bytes_total)), Rect::new(r.x + 12.0, yy + 10.0, r.w - 24.0, 16.0), 11.0, Weight::Regular, TEXT_DIM, Align::Left);
                 yy += 30.0;
             }
             yy += ui.paragraph(&j.message, Vec2::new(r.x + 12.0, yy), r.w - 24.0, 12.0, Weight::Regular, if j.state == "failed" { DANGER } else { TEXT_SOFT });
@@ -2521,42 +2550,180 @@ pub fn mods(l: &mut Launcher, area: Rect) {
         core::install::cancel(id);
         l.state.poll_now();
     }
-    // content folder
-    let c2 = colr(2);
-    l.ui.panel(c2);
-    let inner = l.ui.heading(Rect::new(c2.x + 18.0, c2.y + 14.0, c2.w - 36.0, c2.h - 28.0), "Content folder", Some("folder_open"));
-    let Some(m) = l.state.mods.clone() else {
-        l.ui.text_in("Reading…", Rect::new(inner.x, inner.y, inner.w, 20.0), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
+    // waiting packs, under the install column's text
+    if let Some(m) = l.state.mods.clone().filter(|m| !m.waiting.is_empty()) {
+        let c0 = colr(0);
+        let y0 = c0.bottom() - 24.0 - 22.0 * m.waiting.len().min(4) as f32;
+        l.ui.text_in("Waiting for their bus", Rect::new(c0.x + 18.0, y0 - 26.0, c0.w - 36.0, 22.0), 12.5, Weight::Bold, TEXT, Align::Left);
+        for (k, w) in m.waiting.iter().take(4).enumerate() {
+            l.ui.text_in(w, Rect::new(c0.x + 18.0, y0 + k as f32 * 22.0, c0.w - 36.0, 20.0), 12.0, Weight::Regular, TEXT_DIM, Align::Left);
+        }
+    }
+    mod_list(l, colr(2));
+}
+
+/// The Mods page's filters over the list.
+const MOD_FILTERS: [&str; 6] = ["All", "Buses", "Maps", "Archives", "Other", "Off"];
+
+fn mod_passes(m: &core::mods::Mod, filter: usize) -> bool {
+    use core::mods::Kind;
+    match filter {
+        1 => m.kind == Kind::Bus,
+        2 => m.kind == Kind::Map,
+        3 => m.kind == Kind::Archive,
+        4 => m.kind == Kind::Other,
+        5 => !m.enabled,
+        _ => true,
+    }
+}
+
+/// Every mod of the content folder (see `omsi_launcher_lib::mods`): found by a search and a
+/// filter, each switched off and on - its folders out of the game's sight, nothing deleted -
+/// or deleted after a question asked in its row.
+fn mod_list(l: &mut Launcher, c: Rect) {
+    use core::mods::Kind;
+    l.ui.panel(c);
+    let inner = l.ui.heading(Rect::new(c.x + 18.0, c.y + 14.0, c.w - 36.0, c.h - 28.0), "Installed mods", Some("extension"));
+    let Some(status) = l.state.mods.clone() else {
+        l.ui.text_in("Reading the content folder...", Rect::new(inner.x, inner.y, inner.w, 20.0), 12.5, Weight::Regular, TEXT_DIM, Align::Left);
         return;
     };
+    let mods = status.installed.clone();
+    let on = mods.iter().filter(|m| m.enabled).count();
+    // the content folder: where, how much room
+    l.ui.text_in(&format!("{} mods, {on} on | {} free", mods.len(), fmt_bytes(status.free_bytes)), Rect::new(c.x + 220.0, c.y + 14.0, c.w - 238.0, 28.0), 12.0, Weight::Regular, TEXT_DIM, Align::Right);
     let mut y = inner.y;
-    y += l.ui.paragraph(&m.content_dir, Vec2::new(inner.x, y), inner.w, 12.0, Weight::Medium, TEXT_SOFT);
-    y += 6.0;
-    l.ui.text_in(&format!("{} free on this disk", fmt_bytes(m.free_bytes)), Rect::new(inner.x, y, inner.w, 20.0), 13.0, Weight::Bold, ACCENT, Align::Left);
-    y += 30.0;
-    for (f, n) in &m.folders {
-        l.ui.icon("folder_open", Vec2::new(inner.x + 9.0, y + 10.0), 16.0, TEXT_DIM);
-        l.ui.text_in(f, Rect::new(inner.x + 26.0, y, inner.w * 0.6, 20.0), 12.5, Weight::Medium, TEXT, Align::Left);
-        l.ui.text_in(&format!("{n} {}", if *n == 1 { "entry" } else { "entries" }), Rect::new(inner.x, y, inner.w, 20.0), 12.0, Weight::Regular, TEXT_DIM, Align::Right);
-        y += 24.0;
+    l.ui.text_in(&status.content_dir, Rect::new(inner.x, y, inner.w - 90.0, 18.0), 11.5, Weight::Regular, TEXT_FAINT, Align::Left);
+    if l.ui.button("mods-open-folder", Rect::new(inner.right() - 80.0, y - 4.0, 80.0, 26.0), "Open", Some("open_in_new"), ButtonKind::Ghost) {
+        crate::updater::open_url(&status.content_dir);
     }
-    if !m.archives.is_empty() {
-        y += 8.0;
-        l.ui.heading(Rect::new(inner.x, y, inner.w, 28.0), "Archives used in place", None);
-        y += 30.0;
-        for (n, b) in &m.archives {
-            l.ui.text_in(&format!("{n}  ({})", fmt_bytes(*b)), Rect::new(inner.x, y, inner.w, 20.0), 12.0, Weight::Regular, TEXT_SOFT, Align::Left);
-            y += 22.0;
+    y += 26.0;
+    // the search, and the filters with how many each holds
+    let mut q = std::mem::take(&mut l.pages.mod_search);
+    l.ui.text_input("mods-search", Rect::new(inner.x, y, inner.w, 34.0), &mut q, "Search mods...", Some("search"));
+    l.pages.mod_search = q.clone();
+    y += 42.0;
+    let labels: Vec<String> = MOD_FILTERS.iter().enumerate().map(|(k, f)| format!("{f} {}", mods.iter().filter(|m| mod_passes(m, k)).count())).collect();
+    let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+    let mut f = l.pages.mod_filter;
+    if l.ui.segmented("mods-filter", Rect::new(inner.x, y, inner.w, 32.0), &mut f, &refs) {
+        l.pages.mod_filter = f;
+    }
+    y += 42.0;
+    let q = q.to_lowercase();
+    let mut shown: Vec<core::mods::Mod> = mods.into_iter().filter(|m| mod_passes(m, l.pages.mod_filter)).filter(|m| q.is_empty() || m.name.to_lowercase().contains(&q) || m.paths.iter().any(|p| p.to_lowercase().contains(&q))).collect();
+    // (switched-on first, then by name)
+    shown.sort_by(|a, b| b.enabled.cmp(&a.enabled).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    let busy = l.state.mod_busy.clone();
+    let confirm = l.pages.mod_confirm.clone();
+    let empty = status.installed.is_empty();
+    // what the rows asked: (id, Some(on)) switch, (id, None) delete asked, delete confirmed
+    let mut toggle: Option<(String, bool)> = None;
+    let mut ask: Option<Option<String>> = None;
+    let mut delete: Option<String> = None;
+    let mut open_toggle: Option<String> = None;
+    let opened = l.pages.mod_open.clone();
+    let list = Rect::new(inner.x - 6.0, y, inner.w + 12.0, inner.bottom() - y);
+    l.ui.scroll_area("mods-list", list, &mut |ui, v| {
+        if shown.is_empty() {
+            let t = if empty { "No mods yet. Choose a folder or an archive on the left, or drop one onto the window." } else { "No mod matches." };
+            ui.paragraph(t, Vec2::new(v.x + 8.0, v.y + 6.0), v.w - 16.0, 12.5, Weight::Regular, TEXT_DIM);
+            return 40.0;
+        }
+        let rh = 54.0;
+        // (an opened mod shows what it holds under its row, a line per folder of the game it
+        // put things into: Vehicles, Fonts, Texture, ...)
+        let line_h = 18.0;
+        let mut top = v.y;
+        for m in shown.iter() {
+            let groups = if opened.contains(&m.id) { mod_tree(&m.paths) } else { Vec::new() };
+            let lines: usize = groups.iter().map(|(_, items)| items.len().div_ceil(3).max(1)).sum();
+            let extra = if groups.is_empty() { 0.0 } else { lines as f32 * line_h + 8.0 };
+            let full = Rect::new(v.x + 6.0, top, v.w - 16.0, rh - 6.0 + extra);
+            top += rh + extra;
+            if full.bottom() < list.y - rh || full.y > list.bottom() + rh {
+                continue;
+            }
+            let r = full;
+            let asking = confirm.as_deref() == Some(m.id.as_str());
+            ui.p().rounded(full, 8.0, if asking { DANGER.alpha(0.12) } else { Color::WHITE.alpha(if m.enabled { 0.04 } else { 0.015 }) });
+            if !groups.is_empty() {
+                let mut ly = r.y + rh - 8.0;
+                for (folder, items) in &groups {
+                    for (row, chunk) in items.chunks(3).enumerate() {
+                        if row == 0 {
+                            ui.text_in(folder, Rect::new(r.x + 44.0, ly, 110.0, line_h), 11.5, Weight::Medium, TEXT_DIM, Align::Left);
+                        }
+                        ui.text_in(&chunk.join("   "), Rect::new(r.x + 156.0, ly, r.w - 170.0, line_h), 11.5, Weight::Regular, TEXT_FAINT, Align::Left);
+                        ly += line_h;
+                    }
+                }
+            }
+            let r = Rect::new(r.x, r.y, r.w, rh - 6.0);
+            let icon = match m.kind {
+                Kind::Bus => "directions_bus",
+                Kind::Map => "map",
+                Kind::Archive => "inventory_2",
+                Kind::Other => "extension",
+            };
+            ui.icon(icon, Vec2::new(r.x + 22.0, r.center().y), 20.0, if m.enabled { ACCENT } else { TEXT_FAINT });
+            let tw = r.w - 230.0;
+            ui.text_in(&m.name, Rect::new(r.x + 44.0, r.y + 6.0, tw, 20.0), 13.5, Weight::Medium, if m.enabled { TEXT } else { TEXT_DIM }, Align::Left);
+            let open = opened.contains(&m.id);
+            if ui.icon_button(&format!("mod-open-{}", m.id), Vec2::new(r.right() - 130.0, r.y + 24.0), 17.0, if open { "expand_less" } else { "expand_more" }, "What this mod holds, folder by folder") {
+                open_toggle = Some(m.id.clone());
+            }
+            // (the folders it holds: under the row once opened by its arrow)
+            let folders = mod_tree(&m.paths).iter().map(|(f, items)| format!("{f} {}", items.len())).collect::<Vec<_>>().join(", ");
+            let mut sub = vec![folders, fmt_bytes(m.bytes)];
+            if !m.enabled {
+                sub.insert(0, "OFF".into());
+            }
+            if m.installed > 0 {
+                sub.push(format!("installed {}", chrono_like(m.installed)));
+            } else if !m.noted {
+                sub.push("found in the content folder".into());
+            }
+            ui.text_in(&sub.join(" | "), Rect::new(r.x + 44.0, r.y + 26.0, tw, 16.0), 11.0, Weight::Regular, TEXT_FAINT, Align::Left);
+            if busy.as_deref() == Some(m.id.as_str()) {
+                ui.text_in("...", Rect::new(r.right() - 60.0, r.y, 40.0, r.h), 16.0, Weight::Bold, TEXT_DIM, Align::Center);
+                continue;
+            }
+            if asking {
+                // the question, in the row: deleting cannot be undone
+                if ui.button(&format!("mod-del-yes-{}", m.id), Rect::new(r.right() - 96.0, r.y + 9.0, 88.0, 30.0), "Delete", Some("delete"), ButtonKind::Danger) {
+                    delete = Some(m.id.clone());
+                }
+                if ui.button(&format!("mod-del-no-{}", m.id), Rect::new(r.right() - 190.0, r.y + 9.0, 86.0, 30.0), "Keep", None, ButtonKind::Normal) {
+                    ask = Some(None);
+                }
+                continue;
+            }
+            let mut on = m.enabled;
+            if ui.toggle(&format!("mod-on-{}", m.id), Rect::new(r.right() - 96.0, r.y + 10.0, 50.0, 28.0), &mut on, "") {
+                toggle = Some((m.id.clone(), on));
+            }
+            let dr = Rect::new(r.right() - 38.0, r.y + 10.0, 28.0, 28.0);
+            if ui.icon_button(&format!("mod-del-{}", m.id), dr.center(), 17.0, "delete", "Delete this mod (asks first; switch it off instead to keep it)") {
+                ask = Some(Some(m.id.clone()));
+            }
+        }
+        top - v.y
+    });
+    if let Some(id) = open_toggle {
+        if !l.pages.mod_open.remove(&id) {
+            l.pages.mod_open.insert(id);
         }
     }
-    if !m.waiting.is_empty() {
-        y += 8.0;
-        l.ui.heading(Rect::new(inner.x, y, inner.w, 28.0), "Waiting for their bus", None);
-        y += 30.0;
-        for w in &m.waiting {
-            l.ui.text_in(w, Rect::new(inner.x, y, inner.w, 20.0), 12.0, Weight::Regular, TEXT_DIM, Align::Left);
-            y += 22.0;
-        }
+    if let Some((id, on)) = toggle {
+        l.state.mod_toggle(id, on);
+    }
+    if let Some(a) = ask {
+        l.pages.mod_confirm = a;
+    }
+    if let Some(id) = delete {
+        l.pages.mod_confirm = None;
+        l.state.mod_remove(id);
     }
 }
 
@@ -2623,7 +2790,7 @@ pub fn setup(l: &mut Launcher, area: Rect) {
                     l.pages.setup_game = None;
                     let same = chosen.is_empty() || std::path::Path::new(&chosen) == std::path::Path::new(&l.state.config.root);
                     if same {
-                        l.state.set_status("Saved. Reading the content again…", false);
+                        l.state.set_status("Saved. Reading the content again...", false);
                     } else {
                         l.state.set_status(format!("Saved, but the OMSI 2 folder used is {}", l.state.config.root), true);
                     }
@@ -2812,202 +2979,7 @@ mod wizard_tests {
 }
 
 #[cfg(test)]
-mod settings_tests {
-    use super::*;
-    use crate::updater::Status;
-
-    /// Every clickable thing of the settings page by the tab it is on (switches are named
-    /// `set-<key>`). Taken from the page as it was before the tabs: nothing may go missing.
-    fn by_tab() -> Vec<Vec<&'static str>> {
-        let mut graphics = vec![
-            "s-gp-sel", "s-gp-load", "s-gp-del", "s-gp-name", "s-gp-save",
-            "s-preset", "s-graphics", "s-msaa", "s-scale", "s-af", "s-shadow", "set-ssao", "set-shadows", "s-casters", "set-detail_textures", "s-night", "s-led", "s-led-mip", "set-shadow_blobs", "set-reflections", "set-clouds", "s-cloud-quality", "set-windy_trees",
-            "set-fullscreen", "s-res", "set-vsync", "s-fps", "s-view", "s-maxobj", "s-minobj", "s-mirror", "s-mirror-refresh", "s-texmem", "set-texture_compression", "set-gpu_texture_compression",
-        ];
-        if !cfg!(target_os = "macos") {
-            graphics.push("s-api");
-        }
-        let driving = vec![
-            "s-keys", "set-steering_linear", "set-old_steering", "set-red_steer_spd", "s-mouse", "s-mouse-pedal", "set-mouse_smooth", "set-mouse_right_off", "set-blinker_cancel", "set-brake_hold", "set-auto_clutch", "set-auto_shift", "set-momentary_gears", "s-go-keys",
-            "s-wrange", "s-wlock", "s-pad-steer-smooth", "s-pad-steer-speed", "s-pad-deadzone", "set-pad_steer_linear", "s-pad-type", "set-pad_buttons", "set-arrows_switch_cams", "s-pedt", "s-pedb", "set-ff_enabled", "set-ff_invert", "s-ffroad", "s-ffeng", "s-fffade", "s-wreset", "s-go-pads",
-        ];
-        let mut camera = vec![
-            "s-seaty",
-            "s-seatz",
-            "s-seatx",
-            "s-seat-pitch",
-            "s-seatreset",
-            "s-fov",
-            "s-look-sens",
-            "set-right_stick_look",
-            "s-look-smoothing",
-            "s-head-idle",
-            "s-head-idle-pace",
-            "set-steer_look",
-            "s-steer-look-angle",
-            "s-steer-look-response",
-            "set-head_movement",
-            "set-driverview_smooth",
-            "set-hands_in_cab",
-            "set-alt_view",
-            "set-precision_zoom",
-            "set-camera_collision",
-            "set-driver",
-            "set-head_tracking",
-            "s-trackir-yaw", "s-trackir-pitch", "s-trackir-roll",
-            "set-head_tracking_invert_yaw", "set-head_tracking_invert_pitch", "set-head_tracking_invert_roll",
-            "s-trackir-x", "s-trackir-y", "s-trackir-z",
-            "set-head_tracking_invert_x", "set-head_tracking_invert_y", "set-head_tracking_invert_z",
-            "s-trackir-reset",
-            "set-triple_screen",
-            "set-triple_span",
-            "set-triple_hud_center",
-            "s-triple-width_mm",
-            "s-triple-distance_mm",
-            "s-triple-bezel_mm",
-            "s-triple-left_angle_deg",
-            "s-triple-right_angle_deg",
-            "s-triple-eye_height_mm",
-        ];
-        if cfg!(windows) {
-            camera.extend(["set-vr", "s-vr-scale", "s-vr-head-smoothing", "s-vr-mirror-rate", "set-vr_desktop_mirror", "s-go-vr-keys"]);
-        }
-        // (the radio stations: one, see `frame`)
-        let sound = vec!["s-vol", "s-volai", "s-volsc", "set-doppler", "s-voices", "radio-name-0", "radio-url-0", "radio-del-0", "radio-add"];
-        let gameplay = vec![
-            "s-board", "set-exact_fare", "s-pax", "set-get_up", "s-unsched", "s-maxsched", "s-maxpark", "set-ai_wait_timed_stops_only",
-            "s-maint", "set-collision_vehicles", "set-collision_objects", "set-collision_pedestrians", "set-use_real_time", "set-use_real_date", "set-time_sync", "set-metar_sync", "s-timespeed",
-        ];
-        let general = vec![
-            "s-lang", "set-machine_translation", "set-launcher_rest", "set-discord_status", "set-voice_chat", "s-uiscale", "set-ui_scale_window", "s-uiop", "set-tooltips", "set-show_fps", "set-notes", "set-chat", "s-chatsize", "set-name_tags",
-            "set-navigator", "set-nav_arrows", "set-nav_ai", "corner-top-left", "corner-top-right", "corner-bottom-left", "corner-bottom-right",
-            "set-update_check", "set-update_auto", "set-update_notify", "set-presence", "s-upd-check", "s-upd-github", "s-reset",
-        ];
-        vec![graphics, driving, camera, sound, gameplay, general]
-    }
-
-    /// Settings that show every row: Enhanced (Vanilla hides the shadows and effects), VR on.
-    fn all_rows() -> Value {
-        let mut s = core::settings_from_text(None);
-        s["triple_screen"] = json!(true);
-        s["graphics"] = json!("enhanced");
-        s["vr"] = json!(true);
-        s
-    }
-
-    fn outside() -> Outside {
-        Outside { update: Status::Idle, check_updates: false, reset: false, controls: None }
-    }
-
-    /// One frame of tab `tab`, its two columns tall enough that nothing is cut off. The Sound
-    /// tab lists one radio station (not the radio.cfg of whoever runs the tests).
-    fn frame(ui: &mut Ui, tab: usize, s: &mut Value, out: &mut Outside) {
-        RADIO.with(|r| {
-            r.borrow_mut().get_or_insert_with(|| vec![("One".into(), "https://example.org/one.mp3".into())]);
-        });
-        ui.begin(Vec2::new(1200.0, 2000.0), 1.0, 1.0 / 60.0);
-        let mut dirty = 0.0;
-        settings_tab(ui, tab, s, &mut dirty, out, [Rect::new(0.0, 0.0, 580.0, 2000.0), Rect::new(620.0, 0.0, 580.0, 2000.0)]);
-    }
-
-    /// Click the widget `name` on tab `tab`: the mouse goes down over it and comes up again.
-    fn click(tab: usize, name: &str, s: &mut Value) -> Outside {
-        let mut ui = Ui::new();
-        let mut out = outside();
-        frame(&mut ui, tab, s, &mut out);
-        let r = *ui.drawn.get(&id_of(name)).unwrap_or_else(|| panic!("{name} is not on the {} tab", SETTINGS_TABS[tab]));
-        ui.input.mouse = r.center();
-        ui.input.pressed = true;
-        ui.input.down = true;
-        frame(&mut ui, tab, s, &mut out);
-        ui.input.pressed = false;
-        ui.input.down = false;
-        ui.input.released = true;
-        frame(&mut ui, tab, s, &mut out);
-        out
-    }
-
-    #[test]
-    fn every_setting_is_on_exactly_one_tab() {
-        let tabs = by_tab();
-        assert_eq!(tabs.len(), SETTINGS_TABS.len());
-        let mut seen = std::collections::HashSet::new();
-        for name in tabs.iter().flatten() {
-            assert!(seen.insert(*name), "{name} is listed on two tabs");
-        }
-        for (tab, names) in tabs.iter().enumerate() {
-            let mut ui = Ui::new();
-            frame(&mut ui, tab, &mut all_rows(), &mut outside());
-            for name in names {
-                assert!(ui.drawn.contains_key(&id_of(name)), "{name} is not on the {} tab", SETTINGS_TABS[tab]);
-            }
-            assert_eq!(ui.drawn.len(), names.len(), "the {} tab has a clickable thing more than the list names", SETTINGS_TABS[tab]);
-        }
-    }
-
-    /// The phone's stacked Graphics tab shows the cloud quality with Enhanced, and the
-    /// choice reaches the game's settings.
-    #[test]
-    fn stacked_graphics_tab_shows_and_saves_the_cloud_quality() {
-        let mut ui = Ui::new();
-        let mut s = all_rows();
-        let mut out = outside();
-        ui.begin(Vec2::new(430.0, 1600.0), 1.0, 1.0 / 60.0);
-        let mut dirty = 0.0;
-        settings_tab(&mut ui, 0, &mut s, &mut dirty, &mut out, [Rect::new(12.0, 0.0, 406.0, 760.0), Rect::new(12.0, 780.0, 406.0, 760.0)]);
-        assert!(ui.drawn.contains_key(&id_of("s-cloud-quality")));
-        s["cloud_quality"] = json!("low");
-        let saved = core::settings_to_text(&s, None);
-        assert_eq!(crate::settings::Settings::from_text(&saved).cloud_quality, "low");
-    }
-
-    #[test]
-    fn right_stick_look_switch_toggles_and_saves_from_the_camera_tab() {
-        let mut s = all_rows();
-        assert_eq!(s["right_stick_look"], json!(true));
-
-        click(2, "set-right_stick_look", &mut s);
-        assert_eq!(s["right_stick_look"], json!(false));
-        let saved = core::settings_to_text(&s, None);
-        assert_eq!(
-            core::settings_from_text(Some(&saved))["right_stick_look"],
-            json!(false)
-        );
-
-        click(2, "set-right_stick_look", &mut s);
-        assert_eq!(s["right_stick_look"], json!(true));
-    }
-
-    #[test]
-    fn the_driving_tab_leads_to_the_keys_and_the_controllers() {
-        let mut s = all_rows();
-        assert_eq!(click(1, "s-go-keys", &mut s).controls, Some(0));
-        assert_eq!(click(1, "s-go-pads", &mut s).controls, Some(1));
-    }
-
-    /// The mouse steering's smoothing is on unless switched off, and the switch is kept (#1092).
-    #[test]
-    fn smooth_mouse_steering_switches_off_and_is_saved() {
-        let mut s = all_rows();
-        assert_eq!(s["mouse_smooth"], json!(true));
-        click(1, "set-mouse_smooth", &mut s);
-        assert_eq!(s["mouse_smooth"], json!(false));
-        let saved = core::settings_to_text(&s, None);
-        assert!(saved.contains("mouse_smooth=0\n"), "{saved}");
-        assert_eq!(core::settings_from_text(Some(&saved))["mouse_smooth"], json!(false));
-        assert!(!crate::settings::Settings::from_text(&saved).mouse_smooth);
-        assert!(crate::settings::Settings::from_text("").mouse_smooth);
-    }
-
-    #[test]
-    fn reset_asks_first_and_changes_nothing() {
-        let mut s = all_rows();
-        let before = s.clone();
-        let out = click(5, "s-reset", &mut s);
-        assert!(out.reset);
-        assert_eq!(s, before);
-    }
-}
+mod settings_tests;
 
 #[cfg(test)]
 mod pad_action_tests {
@@ -3056,5 +3028,29 @@ mod pad_remove_tests {
         assert_eq!(super::remove_device(&mut devices, &mut sel), "SideWinder Joystick");
         assert_eq!(sel, 0);
         assert!(names(&cfg_text(&devices)).is_empty());
+    }
+}
+
+/// A mod's paths grouped by the game's folder they lie in (`Vehicles`, `Fonts`, `Texture`,
+/// ...), each with what of it is the mod's: `[("Fonts", ["a.oft", "b.oft"]), ...]`.
+fn mod_tree(paths: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for p in paths {
+        let (folder, rest) = p.split_once('/').unwrap_or(("", p.as_str()));
+        let folder = if folder.is_empty() { "(top)" } else { folder };
+        match out.iter_mut().find(|(f, _)| f.eq_ignore_ascii_case(folder)) {
+            Some((_, items)) => items.push(rest.to_string()),
+            None => out.push((folder.to_string(), vec![rest.to_string()])),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod mod_tree_tests {
+    #[test]
+    fn a_mods_paths_are_grouped_by_folder() {
+        let t = super::mod_tree(&["Vehicles/MAN_SD202".into(), "Fonts/a.oft".into(), "Fonts/b.oft".into(), "Texture/Signs".into()]);
+        assert_eq!(t, vec![("Vehicles".to_string(), vec!["MAN_SD202".to_string()]), ("Fonts".to_string(), vec!["a.oft".to_string(), "b.oft".to_string()]), ("Texture".to_string(), vec!["Signs".to_string()])]);
     }
 }

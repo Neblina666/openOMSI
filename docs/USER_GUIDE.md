@@ -53,6 +53,14 @@ Everything can also be given on the command line, which then skips both:
 | `--enhanced-plus` | Enhanced+: the physically based renderer with ray-traced shadows, ambient occlusion and reflections |
 | `--launcher` / `--menu` / `--no-menu` | open the launcher (the default without arguments), the in-game menu, or neither |
 
+**Experimental passenger animation A/B test.** In the launcher open **Settings → Gameplay →
+Passengers → Passenger animations** and choose **Procedural (experimental)** to test the
+earlier foot-planted/IK poses. **Original OMSI** is the default and remains compatible.
+For temporary A/B tests without changing the saved setting, set `OMSI_PAX_ANIMATION=enhanced`
+before starting openOMSI (or `OMSI_PAX_ANIMATION=original` to force the classic mode).
+This is a visual experiment: check boarding, seats, door steps, CPU time and mirrors before
+making it the default. The setting does not change passenger routing or tickets.
+
 Keys in the window: **W** throttle, **S** brake, **A**/**D** steering - the arrow keys do the
 same - and every vehicle key of `Inputs/keyboard.cfg` works as it does in OMSI: throttle
 Shift+Num 8, brake Shift+Num 2, steering Shift+Num 4/6, **E** battery and ignition, **M**
@@ -66,7 +74,7 @@ whole start-up by itself (main switch, ignition, starter, gearbox to neutral); `
 is the same thing for an offscreen run.
 
 **Updates.** When the launcher starts it asks
-[github.com/openOMSI-Project/openOMSI](https://github.com/openOMSI-Project/openOMSI) for the latest release
+[github.com/openOMSI-org/openOMSI](https://github.com/openOMSI-org/openOMSI) for the latest release
 and, when there is a newer one, offers it: **Update now** downloads it (checked against the
 SHA-256 GitHub lists), puts the new program in place of the old one and starts the launcher
 again - on Windows `openomsi.exe` and `openomsi-launcher.exe`, on macOS the `openOMSI.app`
@@ -108,7 +116,11 @@ Settings → Driving → *Mouse steering sensitivity* makes it more or less sens
 braking: above 100 % the pedal reaches full sooner and below 100 % it takes more travel.
 Mouse steering works in the driver's, the passenger and the outside view; the wheel follows
 the cursor smoothly (a short easing, no steps). With *Smooth mouse steering* off (Settings →
-Driving) the wheel and the pedals are where the cursor says at once, as in OMSI.
+Driving) the wheel and the pedals are where the cursor says at once, as in OMSI. While the mouse
+steers the cursor is held, so the wheel reaches its full lock past the window's edges and a
+cross shows where it steers; with *Hold the cursor while the mouse steers* off the system's
+crosshair stays free (it follows the hand without the frame's delay, and a graphics tablet's
+pen works with it) and the window's edges are the lock, as in OMSI.
 
 Two switches there change the steering keys (both off by default): *Steering linearity* turns
 the wheel at OMSI's own steady pace (the curvature grows by the same amount every millisecond
@@ -146,15 +158,47 @@ LAN session. Esc opens the game menu: drive the next placed vehicle, place any v
 the installation in front of the camera (or beside the bus), couple what stands close behind
 the bus and uncouple it again, save the situation or load the quicksave, the next weather, the clock an hour on or back, refuel and wash (only at a
 petrol station, as in OMSI), repair (the team needs the map's travel time when the bus stands
-in no depot yard), screenshot, timetable, skip the duty's next stop (also **Ctrl+Shift+H**: for a
-stop the bus cannot reach or never registers at), the object editor (below), quit. Its *Options* hold
-one line a setting under the launcher's headings (Simulation, Display & sound, Driving,
-Camera): **Left** and **Right** (or a click on the arrows round the value) step it down and
-up, Enter as before; they are kept for the next game. Home is the ticket desk camera and Insert the timetable view (as OMSI's keyboard.cfg binds them), and the
+in no depot yard), the photo mode (below), timetable, skip the duty's next stop (also **Ctrl+Shift+H**: for a
+stop the bus cannot reach or never registers at), the object editor (below), quit. The menu is a
+page of the launcher: its rail on the left (the menu's lines as its pages, the picture of the
+game beside it with a card of what is being driven and **Resume**), and *Options*, *Controls*,
+*Vehicle options*, *World options* and the lists open as launcher pages right of the rail - the
+tabs as the launcher's bar, the settings in two columns with its fields, switches, sliders and
+drop-downs. **Up**/**Down** and **Enter** work them as before, **Left** and **Right** step a
+value; the settings are kept for the next game. Home is the ticket desk camera and Insert the timetable view (as OMSI's keyboard.cfg binds them), and the
 change keys of keyboard.cfg hand out or take back the change. The HUD
 shows time, speed, line, next stop, delay and what the workshop just did (and why the bus
 stands: the parking brake, low air pressure, a line the date's chrono takes off), and the
 controls for the first seconds.
+
+### Photo mode
+
+*Photo mode* in the game menu (or **Ctrl+F12**, the `photo_mode` key) stops the game and hands
+over a camera of its own, as the racing games' photo modes do. **WASD** fly it (level over the
+ground whichever way it looks), **Q**/**E** (or Space) go down and up, the right mouse button
+held - or the left one over the picture - looks round (the arrows too), the wheel and **+**/**-**
+zoom the lens, **Z**/**X** roll it and **R** levels it again, **Shift** is faster and **Alt**
+slower, **Tab** steps through the panel's pages, **H** hides the panel, **Enter** (or F12) takes
+the photo and **Esc** leaves. A gamepad: the left stick moves, the right one looks, the triggers
+go down and up, the shoulder buttons roll, the d-pad zooms, A takes the photo, Y hides the
+panel, X levels, B leaves. The camera stays within a distance of the bus (25 m to unlimited)
+and above the ground; *Orbit* turns it round the bus instead.
+
+The panel has five pages. *Camera*: free or orbit, the focal length (10-400 mm, a full-frame
+camera's), the roll, the speed, the distance allowed, the frame (the window's or 16:9, 21:9,
+3:2, 4:3, 1:1, 4:5, 9:16 - the photo is cut to it) and the guides (thirds, golden ratio,
+centre). *Lens*: depth of field with the aperture (f/1.2-f/22), the focus on the bus or at a
+distance set by hand and the bokeh's shape (round, 5, 6 or 8 blades); motion blur for a
+rolling shot with the shutter speed (the bus stays sharp, the street passes - it needs the
+bus moving when the game was stopped); how many samples a photo is made of. *Colour*:
+exposure, contrast, highlights, shadows, saturation, vibrance, temperature, tint. *Effects*:
+a film look (vivid, warm, cool, vintage, sepia, black and white, noir, bleach bypass, teal and
+orange, faded film) and its strength, film grain, vignette, colour fringes, sharpening.
+*Scene*: the clock an hour or a quarter on or back, and the photo's size (the window's or
+double). Depth of field and motion blur are real: the photo is the average of many pictures,
+each taken through another point of the aperture and at another moment of the shutter, so
+what is shown sharpens over a second or two once the camera stands still (the panel shows
+how far). What is shown is the photo as it is saved - a PNG in the `Screenshots` folder.
 
 On a duty the game keeps a **journey log** in the content folder's `Journeys` (one text file
 a duty, named by the real date and time it began and the line and tour): each trip driven
@@ -207,7 +251,9 @@ again only when something changes; drag on it to turn the bus, scroll to zoom. I
   yet has **Set up**, and **Set up step by step** finds its axes (turn the wheel left, press
   each pedal); every button of the device is listed (press one to jump to it). On Windows the
   devices are read through DirectInput, as OMSI does, so wheels Windows lists can be
-  configured for steering. Force feedback needs a driver that supports constant force:
+  configured for steering. Logitech wheels push the other way from DirectInput's force, so the game
+  turns their force round by itself (leave *Invert force feedback* off unless one still feels wrong).
+  Force feedback needs a driver that supports constant force:
   parking resistance eases as the bus rolls, with centring and
   feedback from the bus's sideways acceleration, short bumps when the front wheels cross
   an edge, plus the scripts' shaking, `FF_Vib_Amp`. Over the top of that the wheel keeps up
@@ -301,7 +347,8 @@ material its own light outright - `[matl_glow] <texture> <value>` (openOMSI's ow
 docs/FORMATS.md): the texture is a greyscale mask of where it shines (the light is the
 material's own colour) and `value` is on this slider's scale, so `6` is as bright as its default
 and `20` brighter than its top; the slider does not change it. `mouse_sens` (mouse steering,
-1 = OMSI's), `mouse_smooth` (0: the mouse's wheel follows the cursor without easing),
+1 = OMSI's), `mouse_smooth` (0: the mouse's wheel follows the cursor without easing), `mouse_hold` (0: the
+cursor stays free while the mouse steers),
 `ui_scale` (the size of the game's interface over the picture - its texts,
 the menu, the timetable, the navigator and the city map - from 0.5 to 2, 1 by default, on
 top of the screen's own scaling; on a window taller than 1080 lines the interface grows with
@@ -334,7 +381,7 @@ Radeon HD 5000/6000). It is tried last, after the other three failed, and only w
 `libEGL.dll` and `libGLESv2.dll` (Google's ANGLE, BSD licence, with its Direct3D 11 renderer)
 are next to `openomsi.exe`; without them it is skipped (the log says so). The Windows package
 is to ship them, built from ANGLE's own source by
-[angle-openomsi](https://github.com/openOMSI-Project/angle-openomsi); with them the log names the
+[angle-openomsi](https://github.com/openOMSI-org/angle-openomsi); with them the log names the
 adapter `ANGLE (…Direct3D11…)` on the `Gl` backend.
 
 `drive_keys` is a control preset: `simple` (W/S/A/D and the arrow keys drive; the default),
@@ -431,6 +478,13 @@ their `spray.osc`). They get that spray only on a road wet through (`StreetCond`
 OMSI, and the puddles' spray on top. Spray is thrown
 within 100 m of the camera (less of it farther off), at most 1400 puffs at once; none shows
 inside the bus the camera is in.
+
+Rain costs frames, so Graphics → *Rain quality* (`rain_quality`) sets how much of it is drawn:
+**High** (the default) paints the drops on the glass 30 times a second, lets every vehicle
+throw spray and fills the air with the full curtain of falling streaks; **Medium** paints the
+glass 15 times a second, keeps only your own bus's spray and draws half the streaks; **Low**
+shows OMSI 2's own texture rain on the glass instead of the drops (from the next bus loaded),
+throws no spray and draws a quarter of the streaks.
 
 The vanilla look stays the default. The navigator (`crates/omsi-app/src/navigator.rs`) sits in a corner of the screen (lower
 left by default), after the Route Advisor of Euro Truck Simulator 2: small, dark and half

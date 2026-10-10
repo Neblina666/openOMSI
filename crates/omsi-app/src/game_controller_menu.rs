@@ -125,7 +125,7 @@ fn axis_rows(d: &DeviceCfg, live: Option<&crate::controllers::Connected>) -> Row
     AXES.iter().enumerate().map(|(a, label)| {
         let function = Func::LABELS[(Func::code(d.axes[a].map(|x| x.0)) + 1) as usize];
         let value = live.and_then(|c| c.axes.iter().find(|(k, _)| *k == a))
-            .map(|(_, v)| format!(" · {v:+.2}")).unwrap_or_default();
+            .map(|(_, v)| format!(" | {v:+.2}")).unwrap_or_default();
         crate::game_lists::opens(&format!("{label}: {function}{value}"),
             "Choose the function, direction and response curve of this axis", &format!("edit_axis {a}"))
     }).collect()
@@ -135,15 +135,15 @@ fn axis_rows(d: &DeviceCfg, live: Option<&crate::controllers::Connected>) -> Row
 /// available through physical capture or the separate button-number list.
 fn button_rows(d: &DeviceCfg, names: &crate::describe::ControlNames) -> Rows {
     let mut out = vec![
-        crate::game_lists::opens("Press a button to assign it…", "Capture a button on this device", "capture_button"),
-        crate::game_lists::opens("Choose a button by number…", "Includes unassigned buttons and hat directions", "button_numbers"),
+        crate::game_lists::opens("Press a button to assign it...", "Capture a button on this device", "capture_button"),
+        crate::game_lists::opens("Choose a button by number...", "Includes unassigned buttons and hat directions", "button_numbers"),
         ("Assigned buttons".into(), HEADING.into()),
     ];
     for b in 0..d.buttons.len().max(d.latching.iter().max().map(|b| b + 1).unwrap_or(0)).min(crate::controllers::HAT_BUTTONS + 16) {
         let action = d.buttons.get(b).map(|x| x.0.as_str()).unwrap_or("");
         if action.is_empty() && !d.latching.contains(&b) { continue; }
         let label = if action.is_empty() { "<none>".into() } else { names.control(action) };
-        let desc = if d.latching.contains(&b) { "Latching switch · choose its action or behaviour" } else { "Choose its action or switch behaviour" };
+        let desc = if d.latching.contains(&b) { "Latching switch | choose its action or behaviour" } else { "Choose its action or switch behaviour" };
         out.push(crate::game_lists::opens(&format!("{}: {label}", button_label(b)), desc, &format!("button {b}")));
     }
     if out.len() == 3 {
@@ -157,7 +157,7 @@ fn action_rows(events: Vec<(String, String)>) -> Rows {
     let mut counts = std::collections::HashMap::new();
     for (_, label) in &events { *counts.entry(label.clone()).or_insert(0usize) += 1; }
     events.into_iter().map(|(action, label)| {
-        let label = if counts[&label] > 1 { format!("{label} · {action}") } else { label };
+        let label = if counts[&label] > 1 { format!("{label} | {action}") } else { label };
         (label, format!("bind {action}"))
     }).collect()
 }
@@ -225,8 +225,8 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Rows {
                 2 => out = button_rows(&d, &crate::describe::names(&app.args.root, &app.settings.language)),
                 _ => {
                     let ff = d.ff_scale.unwrap_or((1.0, 1.0));
-                    out.push(row("Steering force", &format!("{:.0} %", ff.0 * 100.0), "Left/right adjusts in steps of 5 % (0–200 %)", "force".into()));
-                    out.push(row("Vibration", &format!("{:.0} %", ff.1 * 100.0), "Left/right adjusts in steps of 5 % (0–200 %)", "vibration".into()));
+                    out.push(row("Steering force", &format!("{:.0} %", ff.0 * 100.0), "Left/right adjusts in steps of 5 % (0-200 %)", "force".into()));
+                    out.push(row("Vibration", &format!("{:.0} %", ff.1 * 100.0), "Left/right adjusts in steps of 5 % (0-200 %)", "vibration".into()));
                     let invert = d.ff_invert.unwrap_or(app.settings.ff_invert);
                     out.push((crate::game_lists::row("Invert force feedback", 's', if invert { "on" } else { "off" }, "Motor direction for this device", None), "force_invert".into()));
                 }
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(rows.len(), 8);
         assert_eq!(rows.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(),
             ["edit_axis 0", "edit_axis 1", "edit_axis 2", "edit_axis 3", "edit_axis 4", "edit_axis 5", "edit_axis 6", "edit_axis 7"]);
-        assert!(rows[0].0.starts_with("X axis: Steering · +0.25"));
+        assert!(rows[0].0.starts_with("X axis: Steering | +0.25"));
         assert!(rows[5].0.starts_with("Z rotation: Brake"));
         assert!(axis_rows(&d, None)[0].0.starts_with("X axis: Steering"));
     }
@@ -518,6 +518,6 @@ mod tests {
     fn identically_named_actions_remain_distinguishable_in_the_picker() {
         let rows = action_rows(vec![("horn".into(), "Horn".into()), ("door_front".into(), "Door".into()), ("door_rear".into(), "Door".into())]);
         assert_eq!(rows, vec![("Horn".into(), "bind horn".into()),
-            ("Door · door_front".into(), "bind door_front".into()), ("Door · door_rear".into(), "bind door_rear".into())]);
+            ("Door | door_front".into(), "bind door_front".into()), ("Door | door_rear".into(), "bind door_rear".into())]);
     }
 }

@@ -131,6 +131,7 @@ impl App {
                 }
             }
             "screenshot" => self.take_screenshot(),
+            "photo_mode" => self.enter_photo(),
             "quicksave" => self.quick_save(),
             "view_set_ego" => {
                 // on foot from where the camera is (beside the bus in the driver's view)

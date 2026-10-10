@@ -15,6 +15,7 @@ pub(crate) fn is_game_action(name: &str) -> bool {
             "sim_pause"
                 | "open_menu"
                 | "screenshot"
+                | "photo_mode"
                 | "quicksave"
                 | "toggel_mouse_ctrl"
                 | "toggel_ctrler"
@@ -22,9 +23,17 @@ pub(crate) fn is_game_action(name: &str) -> bool {
         )
 }
 
+/// How far (m) a click reaches a scenery object with a `[mouseevent]`.
+pub(crate) const SCENERY_OBJECT_REACH: f32 = 50.0;
+
 impl App {
     /// A key of the window, or of an `OMSI_INPUT` script.
     pub(crate) fn on_key(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, pressed: bool, repeat: bool) {
+        // the photo mode has all the keys
+        if self.photo_on() {
+            self.photo_key(code, pressed, repeat);
+            return;
+        }
         if self.xr.vr_nav_edit.is_some() {
             self.vr_nav_edit_key(code, pressed, repeat);
             return;
@@ -415,6 +424,11 @@ impl App {
                 }
                 // (F12 alone only where the bus has no key of its own on it: in OMSI's
                 // keyboard.cfg it is the pram/wheelchair button, which it took away)
+                // the photo mode: Ctrl+F12
+                KeyCode::F12 if ctrl => {
+                    self.enter_photo();
+                    return true;
+                }
                 KeyCode::F12 if !self.player.as_ref().is_some_and(|p| p.bindings.iter().any(|b| b.scan_code == 88 && b.chord() == 0 && p.vehicle.ty.program.trigger(&b.action).is_some())) => {
                     self.take_screenshot();
                     return true;
@@ -766,6 +780,37 @@ impl App {
                     let (x, y) = xy();
                     self.on_cursor(x * scale, y * scale);
                 }
+                // `cruise <km/h>`: the bus driven at that speed along its heading until it
+                // crashes (no engine, air or brakes needed: a collision test)
+                "cruise" => {
+                    let kmh: f32 = arg.parse().unwrap_or(0.0);
+                    self.input.cruise = self.player.as_ref().filter(|_| kmh != 0.0).map(|p| (kmh / 3.6, p.vehicle.crashes));
+                }
+                // `behind [m]`: the bus put that far (25 m) behind the nearest moving AI car
+                // within 400 m, on its heading; negative: ahead of it, facing it (a collision
+                // test, with `cruise`)
+                "behind" => {
+                    let back: f64 = arg.parse().unwrap_or(25.0);
+                    let near = self.player.as_ref().map(|p| p.vehicle.position);
+                    let car = near.zip(self.session.traffic.as_ref()).and_then(|(at, t)| {
+                        t.boxes(at, 400.0).into_iter().filter(|o| o.mass > 0.0 && o.velocity.length() > 3.0)
+                            .min_by(|a, b| (a.center - at.truncate()).length().total_cmp(&(b.center - at.truncate()).length()))
+                    });
+                    match car {
+                        Some(o) => {
+                            // (negative: that far ahead of it, facing it - head on)
+                            let dir = o.velocity.normalize();
+                            let at = o.center - dir * back;
+                            let face = if back < 0.0 { -dir } else { dir };
+                            let heading = face.x.atan2(face.y).to_degrees().rem_euclid(360.0);
+                            log::info!("input script: behind the car at ({:.1}, {:.1}) going {:.1} km/h, heading {heading:.1}", o.center.x, o.center.y, o.velocity.length() * 3.6);
+                            crate::admin::teleport(self, glam::DVec3::new(at.x, at.y, (o.z0 + 0.0).max(0.0)), heading);
+                        }
+                        None => log::info!("input script: behind - no moving AI car within 400 m"),
+                    }
+                }
+                // `photo`: into the photo mode (OMSI_PHOTO sets it up)
+                "photo" => self.enter_photo(),
                 // `weather`: the next weather, as the admin menu's "Next weather"
                 "weather" => self.next_weather(),
                 // `rawmouse dx[,dy]`: the mouse moved by (dx, dy) logical pixels as a locked
@@ -826,7 +871,7 @@ impl App {
                     let (press, release) = (arg != "up", arg != "down");
                     if self.menus.placing.is_some() && self.menus.game_menu.is_none() {
                         self.placing_click();
-                    } else if self.menus.game_menu.is_some() {
+                    } else if self.menus.game_menu.is_some() || self.shell_takes_mouse() {
                         // (on the menu as the window's button: its lines, its arrows)
                         if press {
                             self.left_button(event_loop, true);
@@ -1034,7 +1079,11 @@ impl App {
         self.input.mouse_look = false;
         self.input.steer_cursor = None;
         self.input.mouse_pedals.0 = 0.0;
-        // (the cursor held for the mouse steering goes back to the system)
+        if let Some(ph) = self.photo.as_mut() {
+            ph.looking = false;
+        }
+        // (the cursor held for looking round and for the mouse steering goes back to the system)
+        self.sync_look_hold();
         self.sync_mouse_grab();
     }
 

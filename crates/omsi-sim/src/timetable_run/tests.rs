@@ -579,6 +579,220 @@ mod authored_station;
 mod duty;
 mod route;
 
+#[test]
+fn destination_picks_finish_the_current_transition_then_animate_the_latest() {
+    // Build pending text at the start of a three-frame transition,
+    // then publish it and acknowledge the latest requested row when it finishes.
+    // Later selections must wait, leaving the pending text and timer intact.
+    let osc = r#"{trigger:ai_scheduled_settarget}
+(L.L.AI_target_index) (S.L.requested_row)
+-1 (S.L.applied_row)
+{end}
+{frame}
+(L.L.requested_row) (L.L.applied_row) = !
+{if}
+    (L.L.LW_req_ziel_change) 0 =
+    {if}
+        (L.L.requested_row) 0 (M.V.GetTerminusString) (S.$.LW_req_voll)
+    {endif}
+    (L.L.LW_req_ziel_change) 1 + (S.L.LW_req_ziel_change) 3 >=
+    {if}
+        (L.$.LW_req_voll) (S.$.shown_text)
+        (L.L.requested_row) (S.L.applied_row)
+        0 (S.L.LW_req_ziel_change)
+    {endif}
+{endif}
+{end}
+"#;
+    let mut v = script_test_vehicle(
+        osc,
+        "AI_target_index\nrequested_row\napplied_row\nLW_req_ziel_change\n",
+        "LW_req_voll\nshown_text\n",
+    );
+    let hof = omsi_vehicle::Hof {
+        termini: ["First destination", "Second destination", "Third destination"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| omsi_vehicle::hof::Terminus {
+                code: 100 + i as i32,
+                texture_id: name.into(),
+                strings: vec![name.into()],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    v.host.hof = Some(std::sync::Arc::new(hof.clone()));
+
+    set_player_destination_at(&mut v, &hof, "", 0, &[]);
+    v.update(0.1);
+    assert_eq!(v.str_var("LW_req_voll"), "First destination");
+    assert_eq!(v.str_var("shown_text"), "");
+    assert!(v.var("LW_req_ziel_change").unwrap() > 0.0);
+
+    let timer = v.var("LW_req_ziel_change");
+    set_player_destination_at(&mut v, &hof, "", 1, &[]);
+    set_player_destination_at(&mut v, &hof, "", 2, &[]);
+    assert_eq!(v.var("LW_req_ziel_change"), timer);
+    assert_eq!(v.str_var("LW_req_voll"), "First destination");
+    assert_eq!(v.var("AI_target_index"), Some(0.0));
+    assert_eq!(shown_destination(&v, &hof, None), Some(2));
+
+    // The first transition completes with its original target and text.
+    for _ in 0..2 {
+        v.update(0.1);
+    }
+    assert_eq!(v.str_var("shown_text"), "First destination");
+    assert_eq!(v.var("applied_row"), Some(0.0));
+    assert_eq!(v.var("LW_req_ziel_change"), Some(0.0));
+
+    // Start a full transition to the newest selection; skip the intermediate one.
+    v.update(0.1);
+    assert_eq!(v.str_var("LW_req_voll"), "Third destination");
+    assert_eq!(v.str_var("shown_text"), "First destination");
+    v.update(0.1);
+    assert_eq!(v.str_var("shown_text"), "First destination");
+    v.update(0.1);
+    assert_eq!(v.str_var("shown_text"), "Third destination");
+    assert_eq!(v.var("applied_row"), Some(2.0));
+
+    // A selection after a completed transition still updates normally.
+    set_player_destination_at(&mut v, &hof, "", 1, &[]);
+    for _ in 0..3 {
+        v.update(0.1);
+    }
+    assert_eq!(v.str_var("shown_text"), "Second destination");
+}
+
+#[test]
+fn guarded_display_transitions_finish_before_the_latest_selection_starts() {
+    // The trigger accepts a request only when idle. A countdown
+    // then publishes its pending text. Unrelated animation state must survive a pick.
+    let osc = r#"{trigger:ai_scheduled_settarget}
+(L.L.Matrix_ziel_animationtimer) 0 =
+{if}
+    (L.L.AI_target_index) 0 (M.V.GetTerminusString) (S.$.pending_text)
+    3 (S.L.Matrix_ziel_animationtimer)
+{endif}
+{end}
+{frame}
+(L.L.Matrix_ziel_animationtimer) 0 >
+{if}
+    (L.L.Matrix_ziel_animationtimer) 1 - (S.L.Matrix_ziel_animationtimer) 0 =
+    {if}
+        (L.$.pending_text) (S.$.shown_text)
+    {endif}
+{endif}
+{end}
+"#;
+    let hof = omsi_vehicle::Hof {
+        termini: ["First", "Second", "Third"].into_iter().enumerate().map(|(i, name)| {
+            omsi_vehicle::hof::Terminus {
+                code: 100 + i as i32,
+                texture_id: name.into(),
+                strings: vec![name.into()],
+                ..Default::default()
+            }
+        }).collect(),
+        ..Default::default()
+    };
+    for player in [true, false] {
+        let mut v = script_test_vehicle(
+            osc,
+            "AI_target_index\nMatrix_ziel_animationtimer\nunrelated_animation\n",
+            "pending_text\nshown_text\n",
+        );
+        v.host.hof = Some(std::sync::Arc::new(hof.clone()));
+        v.set_var("unrelated_animation", 7.0);
+        super::set_destination_at(&mut v, &hof, "", 0, &[], player);
+        v.update(0.1);
+        assert_eq!(v.str_var("pending_text"), "First");
+        assert!(v.var("Matrix_ziel_animationtimer").unwrap() > 0.0);
+
+        let tick = |v: &mut crate::VehicleInstance| {
+            if player {
+                v.update(0.1);
+            } else {
+                v.update_ai(0.1, &crate::vehicle::AiFrame::default());
+            }
+        };
+        super::set_destination_at(&mut v, &hof, "", 1, &[], player);
+        super::set_destination_at(&mut v, &hof, "", 2, &[], player);
+        assert_eq!(v.var("Matrix_ziel_animationtimer"), Some(2.0));
+        assert_eq!(v.str_var("pending_text"), "First");
+        tick(&mut v);
+        tick(&mut v);
+        assert_eq!(v.str_var("shown_text"), "First");
+        assert_eq!(v.var("Matrix_ziel_animationtimer"), Some(0.0));
+
+        tick(&mut v);
+        assert_eq!(v.str_var("pending_text"), "Third");
+        assert_eq!(v.str_var("shown_text"), "First");
+        assert_eq!(v.var("Matrix_ziel_animationtimer"), Some(2.0));
+        tick(&mut v);
+        assert_eq!(v.str_var("shown_text"), "First");
+        tick(&mut v);
+        assert_eq!(v.str_var("shown_text"), "Third", "player={player}");
+        assert_eq!(v.var("unrelated_animation"), Some(7.0));
+    }
+}
+
+#[test]
+fn a_destination_pick_without_a_display_trigger_keeps_script_timers() {
+    let mut v = script_test_vehicle(
+        "{frame}\n{end}\n",
+        "IBIS_TerminusIndex\nLW_req_ziel_change\nMatrix_ziel_animationtimer\n",
+        "IBIS_terminus_name\n",
+    );
+    let hof = omsi_vehicle::Hof {
+        termini: vec![omsi_vehicle::hof::Terminus {
+            code: 100,
+            strings: vec!["Destination".into()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    v.set_var("LW_req_ziel_change", 5.0);
+    v.set_var("Matrix_ziel_animationtimer", 6.0);
+    set_player_destination_at(&mut v, &hof, "", 0, &[]);
+    assert_eq!(v.str_var("IBIS_terminus_name"), "Destination");
+    assert_eq!(v.var("IBIS_TerminusIndex"), Some(0.0));
+    assert_eq!(v.var("LW_req_ziel_change"), Some(5.0));
+    assert_eq!(v.var("Matrix_ziel_animationtimer"), Some(6.0));
+}
+
+#[test]
+fn queued_destinations_are_discarded_when_the_depot_or_script_state_changes() {
+    let osc = "{trigger:ai_scheduled_settarget}\n(L.L.AI_target_index) (S.L.accepted_row)\n{end}\n{frame}\n{end}\n";
+    let hof = omsi_vehicle::Hof {
+        name: "Original depot".into(),
+        termini: vec![omsi_vehicle::hof::Terminus { code: 100, ..Default::default() }],
+        ..Default::default()
+    };
+    for restore in [false, true] {
+        let mut v = script_test_vehicle(
+            osc,
+            "AI_target_index\naccepted_row\nLW_req_ziel_change\n",
+            "",
+        );
+        v.host.hof = Some(std::sync::Arc::new(hof.clone()));
+        v.set_var("accepted_row", -1.0);
+        v.set_var("LW_req_ziel_change", 1.0);
+        set_player_destination_at(&mut v, &hof, "", 0, &[]);
+        if restore {
+            v.restore_script_state(&[("LW_req_ziel_change".into(), 0.0)], &[]);
+        } else {
+            let mut other = hof.clone();
+            other.name = "Replacement depot".into();
+            v.host.hof = Some(std::sync::Arc::new(other));
+            v.set_var("LW_req_ziel_change", 0.0);
+        }
+        v.update_scripts_only(0.0);
+        assert_eq!(v.var("accepted_row"), Some(-1.0));
+        assert!(v.pending_destination.is_none());
+    }
+}
+
 /// The row OMSI's AI bus is given: the first whose ident is the destination, whatever
 /// the codes' order; of equally loose matches the first as well.
 #[test]

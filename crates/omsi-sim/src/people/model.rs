@@ -118,6 +118,8 @@ pub struct Person {
     pub activity: Activity,
     /// The animation: Omsi.exe's walk phase and joint angles (sub_626ae8).
     pub anim: OmsiAnim,
+    /// Optional earlier IK/foot-planted animation, allocated only for experimental rendering.
+    pub procedural: Option<crate::human::Pose>,
     pub state: State,
     /// Seconds in the current state.
     pub t_state: f32,
@@ -393,6 +395,9 @@ pub struct PeopleSim {
     /// ticket by themselves after a moment; `pay` - wait at the desk for the driver to
     /// sell it (and show a pass after `PAY_PATIENCE`); `walk` - no cash desk at all.
     pub boarding: String,
+    /// The chance a boarding passenger takes a standing place although a seat is free
+    /// (`standing_chance` in the settings).
+    pub stand_chance: f32,
     /// The driver pressed the ticket key (`ticket_give`): sell the requested ticket.
     pub give_ticket: bool,
     /// The driver pressed `change_give`: all the change owed goes on the tray at once.

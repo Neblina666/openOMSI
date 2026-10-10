@@ -2,7 +2,22 @@
 
 use super::*;
 
+/// CPU seconds this process has used so far (all threads): on Windows from the system,
+/// which has no `ps`; elsewhere from `ps`.
+#[cfg(windows)]
+pub(crate) fn process_cpu_seconds() -> Option<f64> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let (mut created, mut exited, mut kernel, mut user) = Default::default();
+    // SAFETY: the pseudo handle of this process needs no closing; the four times are ours
+    unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user) }.ok()?;
+    // (in units of 100 ns)
+    let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32 | t.dwLowDateTime as u64) as f64;
+    Some((ticks(kernel) + ticks(user)) / 1e7)
+}
+
 /// CPU seconds this process has used so far (all threads), from `ps`.
+#[cfg(not(windows))]
 pub(crate) fn process_cpu_seconds() -> Option<f64> {
     let out = std::process::Command::new("ps")
         .args(["-o", "cputime=", "-p", &std::process::id().to_string()])
@@ -18,6 +33,42 @@ pub(crate) fn process_cpu_seconds() -> Option<f64> {
         part.parse::<f64>().ok().map(|v| acc * 60.0 + v)
     })?;
     Some(days * 86400.0 + secs)
+}
+
+/// The CPU time the calling thread has used (s): what the frame's own work costs, whatever
+/// else the machine runs meanwhile - wall-clock stage times grow with every other busy
+/// program, a thread's CPU time hardly.
+pub(crate) fn thread_cpu_seconds() -> Option<f64> {
+    #[cfg(unix)]
+    {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: `ts` is a valid timespec for the call to fill.
+        if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) } == 0 {
+            return Some(ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9);
+        }
+        None
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// The instructions the process has retired (macOS): the work done, counted the same however
+/// busy the machine is and whichever cores ran it - CPU times grow when other programs push
+/// the game's threads onto the efficiency cores.
+pub(crate) fn process_instructions() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a rusage_info_v4 for the call to fill, as RUSAGE_INFO_V4 says.
+        let r = unsafe { libc::proc_pid_rusage(std::process::id() as i32, libc::RUSAGE_INFO_V4, &mut info as *mut _ as *mut libc::rusage_info_t) };
+        (r == 0).then_some(info.ri_instructions)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 pub(crate) fn shift_held_now(keys: &hashbrown::HashSet<KeyCode>) -> bool {
@@ -295,7 +346,7 @@ fn backend_instance(api: GraphicsApi) -> wgpu::Instance {
     d.backend_options.gl.context_lock_timeout = Some(GL_CONTEXT_LOCK_TIMEOUT);
     d.backends = api.backends();
     if api == GraphicsApi::Angle {
-        d.backend_options.gl.platform = wgpu::GlPlatform::Angle;
+        return omsi_render::angle::instance(d);
     }
     wgpu::Instance::new(d)
 }
@@ -417,8 +468,25 @@ pub(crate) fn under_gamescope() -> bool {
     std::env::var_os("GAMESCOPE_WAYLAND_DISPLAY").is_some() || std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_lowercase().contains("gamescope"))
 }
 
+/// The screen the game opens on: the one the launcher stands on (`OMSI_SCREEN_AT`, the
+/// launcher's middle), else the main one (#1959: it always opened on the main screen).
+pub(crate) fn home_monitor(event_loop: &winit::event_loop::ActiveEventLoop) -> Option<winit::monitor::MonitorHandle> {
+    let at = omsi_cfg::flags::OMSI_SCREEN_AT.var().and_then(|v| {
+        let (x, y) = v.split_once(',')?;
+        Some((x.trim().parse::<i32>().ok()?, y.trim().parse::<i32>().ok()?))
+    });
+    at.and_then(|(x, y)| {
+        event_loop.available_monitors().find(|m| {
+            let (p, s) = (m.position(), m.size());
+            x >= p.x && y >= p.y && x < p.x + s.width as i32 && y < p.y + s.height as i32
+        })
+    })
+    .or_else(|| event_loop.primary_monitor())
+    .or_else(|| event_loop.available_monitors().next())
+}
+
 pub(crate) fn fit_window(event_loop: &winit::event_loop::ActiveEventLoop, w: f64, h: f64) -> (winit::dpi::LogicalSize<f64>, Option<winit::dpi::PhysicalPosition<i32>>) {
-    let Some(m) = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next()) else {
+    let Some(m) = home_monitor(event_loop) else {
         return (winit::dpi::LogicalSize::new(w, h), None);
     };
     let (screen, scale) = (m.size(), m.scale_factor().max(0.5));
@@ -496,16 +564,28 @@ pub(crate) fn restart_with_allocator_settings() {
 }
 
 /// A Windows GUI program has no console; when it was started from one (cmd, PowerShell)
-/// the log and --help still belong there.
+/// the log and --help still belong there, unless its output was sent to a file or a pipe
+/// (`openomsi.exe ... > game.log 2>&1`): attached, the log went to the console instead and
+/// the file stayed empty.
 #[cfg(windows)]
 pub(crate) fn attach_parent_console() {
     extern "system" {
         fn AttachConsole(process: u32) -> i32;
+        fn GetStdHandle(which: u32) -> isize;
+        fn GetFileType(file: isize) -> u32;
     }
     const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
-    // fails harmlessly when there is no parent console (a double click, the launcher, whose
-    // redirected log file stays the output)
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_TYPE_PIPE: u32 = 3;
+    // AttachConsole fails harmlessly when there is no parent console (a double click, the
+    // launcher, whose redirected log file stays the output)
+    // SAFETY: plain Win32 calls on this process's own standard handle
     unsafe {
+        let err = GetStdHandle(STD_ERROR_HANDLE);
+        if err != 0 && err != -1 && matches!(GetFileType(err), FILE_TYPE_DISK | FILE_TYPE_PIPE) {
+            return;
+        }
         AttachConsole(ATTACH_PARENT_PROCESS);
     }
 }
@@ -550,5 +630,22 @@ mod window_tests {
         // a big screen keeps the size asked for
         let ((w, h), _) = super::fit_rect((1600.0, 900.0), (3840.0, 2160.0), 1.5);
         assert_eq!((w, h), (1600.0, 900.0));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod cpu_time_tests {
+    /// OMSI_PROFILE's CPU time is read on Windows, which has no `ps` (whose whole seconds
+    /// elsewhere would not show 200 ms).
+    #[test]
+    fn the_process_cpu_time_is_read_and_grows() {
+        let before = super::process_cpu_seconds().expect("CPU time");
+        let t = std::time::Instant::now();
+        let mut x = 0u64;
+        while t.elapsed().as_millis() < 200 {
+            x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(1));
+        }
+        let after = super::process_cpu_seconds().expect("CPU time");
+        assert!(after > before, "{before} -> {after}");
     }
 }

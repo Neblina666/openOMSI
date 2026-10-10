@@ -31,6 +31,7 @@ fn the_pool_counts_local_people_and_never_recycles_riders_or_avatars() {
         pace: 1.1,
         activity: Activity::Stand,
         anim: OmsiAnim::default(),
+        procedural: None,
         state: if standing {
             State::Standing
         } else {

@@ -11,14 +11,16 @@ pub(crate) struct SkyBase {
     pub cloud_detail_view: wgpu::TextureView,
     pub cloud_sampler: wgpu::Sampler,
     pub cloud_shape_cpu: Vec<u8>,
+    /// The classic sky's weather (`VanillaSkyUniform`, binding 10).
+    pub vanilla_buf: wgpu::Buffer,
     pub shader: wgpu::ShaderModule,
     pl: wgpu::PipelineLayout,
 }
 
 impl SkyBase {
-    /// `preview`: the launcher's preview, which draws only the vanilla sky - no cloud noise,
-    /// and the shader without the enhanced sky.
-    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue, camera_layout: &wgpu::BindGroupLayout, preview: bool) -> SkyBase {
+    /// With no enhanced pass, use the vanilla sky module and placeholder noise textures.
+    /// This includes ANGLE's texture-unit fallback, not only the launcher's preview.
+    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue, camera_layout: &wgpu::BindGroupLayout, enhanced: bool) -> SkyBase {
         // sky dome
         let float_2d = wgpu::TextureSampleType::Float { filterable: true };
         let sky_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -33,20 +35,23 @@ impl SkyBase {
                 float_texture_entry(6),
                 texture_entry(7, float_2d, wgpu::TextureViewDimension::D3),
                 sampler_entry(8),
+                float_texture_entry(9),
+                uniform_entry(10, wgpu::ShaderStages::FRAGMENT),
             ],
         });
-        let (cloud_shape_view, cloud_detail_view, cloud_sampler, cloud_shape_cpu) = cloud_noise_textures(device, queue, !preview);
+        let (cloud_shape_view, cloud_detail_view, cloud_sampler, cloud_shape_cpu) = cloud_noise_textures(device, queue, enhanced);
         log::info!("renderer: compiling the sky and clouds shaders");
-        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let sky_shader = compile_shader(device, wgpu::ShaderModuleDescriptor {
             label: Some("sky"),
-            source: wgpu::ShaderSource::Wgsl(if preview { [include_str!("../colour.wgsl"), include_str!("../sky.wgsl")].join("\n") } else { sky_shader_source() }.into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source(enhanced).into()),
         });
         let sky_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sky"),
             bind_group_layouts: &[Some(camera_layout), Some(&sky_layout)],
             immediate_size: 0,
         });
-        SkyBase { layout: sky_layout, cloud_shape_view, cloud_detail_view, cloud_sampler, cloud_shape_cpu, shader: sky_shader, pl: sky_pl }
+        let vanilla_buf = uniform_buffer(device, "vanilla sky", std::mem::size_of::<VanillaSkyUniform>() as u64);
+        SkyBase { layout: sky_layout, cloud_shape_view, cloud_detail_view, cloud_sampler, cloud_shape_cpu, vanilla_buf, shader: sky_shader, pl: sky_pl }
     }
 
     pub(crate) fn pipeline(&self, device: &wgpu::Device, f: wgpu::TextureFormat, fs: &str, msaa: u32) -> wgpu::RenderPipeline {
@@ -55,7 +60,7 @@ impl SkyBase {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &SKY_ATTRIBUTES,
         };
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        compile_pipeline(device, &wgpu::RenderPipelineDescriptor {
             label: Some("sky"),
             layout: Some(&self.pl),
             vertex: wgpu::VertexState {
@@ -83,8 +88,70 @@ impl SkyBase {
                 compilation_options: Default::default(),
             }),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(device).as_ref(),
         })
+    }
+}
+
+fn shader_source(enhanced: bool) -> String {
+    if enhanced {
+        sky_shader_source()
+    } else {
+        [include_str!("../colour.wgsl"), include_str!("../sky.wgsl")].join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shader_source;
+    use wgpu::naga;
+
+    /// The fallback sky must actually omit the raymarch/probe entry points and remain
+    /// valid on GLES, not merely refrain from drawing its enhanced pipelines.
+    #[test]
+    fn fallback_sky_translates_without_enhanced_entry_points() {
+        let source = shader_source(false);
+        let module = naga::front::wgsl::parse_str(&source).expect("vanilla sky WGSL");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("vanilla sky validation");
+        let names: Vec<_> = module
+            .entry_points
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, ["vs_main", "fs_main"]);
+        assert!(shader_source(true).contains("fn fs_sky_cube"));
+        for version in [300, 310] {
+            let options = naga::back::glsl::Options {
+                version: naga::back::glsl::Version::Embedded {
+                    version,
+                    is_webgl: false,
+                },
+                ..Default::default()
+            };
+            for entry in &module.entry_points {
+                let pipeline = naga::back::glsl::PipelineOptions {
+                    shader_stage: entry.stage,
+                    entry_point: entry.name.clone(),
+                    multiview: None,
+                };
+                let mut output = String::new();
+                naga::back::glsl::Writer::new(
+                    &mut output,
+                    &module,
+                    &info,
+                    &options,
+                    &pipeline,
+                    Default::default(),
+                )
+                .and_then(|mut writer| writer.write())
+                .expect("vanilla sky GLSL ES");
+            }
+        }
     }
 }
 

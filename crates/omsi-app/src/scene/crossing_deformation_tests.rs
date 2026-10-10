@@ -69,6 +69,7 @@ fn staged(path: PathBuf, ot: Arc<ObjectType>, pose: Pose) -> StagedTile {
         drive: Vec::new(),
         lanes: Mutex::new(Vec::new()),
         street_points: Vec::new(),
+        sound_lines: Vec::new(),
         objects: vec![StagedObject {
             ot,
             id: 1,

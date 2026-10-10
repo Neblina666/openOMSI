@@ -34,6 +34,24 @@ impl App {
         *z = (*z * (1.0 - 0.08 * notches.clamp(-5.0, 5.0))).clamp(0.2, 1.6);
     }
 
+    /// `OMSI_TRACE_LOOK=<csv>`: one line (`what` = frame, cursor, ...) with the cursor, the
+    /// head's turn and the camera drawn last.
+    pub(crate) fn trace_look(&self, what: &str, x: f32, y: f32) {
+        let Some(path) = omsi_cfg::flags::OMSI_TRACE_LOOK.var() else { return };
+        use std::io::Write;
+        static FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+        let mut g = FILE.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_none() {
+            *g = std::fs::File::create(path).ok();
+            if let Some(f) = g.as_mut() {
+                let _ = writeln!(f, "t,what,x,y,look_yaw,look_pitch,cam_yaw,cam_pitch,mouse_look,grab");
+            }
+        }
+        if let (Some(f), Some(c)) = (g.as_mut(), self.camera.as_ref()) {
+            let _ = writeln!(f, "{:.4},{what},{x:.1},{y:.1},{:.3},{:.3},{:.3},{:.3},{},{:?}", self.started.elapsed().as_secs_f64(), self.cam.look.0, self.cam.look.1, c.yaw, c.pitch, self.input.mouse_look as u8, self.input.mouse_grab.mode);
+        }
+    }
+
     pub(crate) fn look_by(&mut self, dx: f32, dy: f32) {
         self.sync_view_look();
         // a hand on the view cancels an eased Space return.
@@ -74,7 +92,7 @@ pub(crate) fn chase_orbit_step(yaw: f32, pitch: f32, dx_px: f32, dy_px: f32) -> 
 
 /// Precision zoom step from a vertical drag: the zoom state `z` (0 wide ..
 /// 1 full zoom) travels at `intent` per 364 px, and the FOV multiplier is
-/// `1/(1+5.5*z)` — full zoom ~6.5x in. Drag down (`dy > 0`) zooms in.
+/// `1/(1+5.5*z)` - full zoom ~6.5x in. Drag down (`dy > 0`) zooms in.
 /// Never past 1.0 (never wider than the bus's own field of view); the floor
 /// is the caller's clamp. Pure (tested below).
 pub(crate) fn precision_zoom_step(mult: f32, dy_px: f32, intent: f32) -> f32 {

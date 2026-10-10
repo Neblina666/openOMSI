@@ -9,7 +9,7 @@ pub(crate) struct Enhanced {
     pub sky_lut: wgpu::Texture,
     pub sky_lut_view: wgpu::TextureView,
     pub lin_sampler: wgpu::Sampler,
-    /// None in the launcher's preview (`RenderOptions::preview_only`)
+    /// None when the enhanced passes are omitted (preview or the GL compatibility path).
     pub probe: Option<Probe>,
 }
 

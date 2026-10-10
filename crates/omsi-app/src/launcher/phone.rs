@@ -164,8 +164,8 @@ fn card(l: &mut Launcher, name: &str, r: Rect, icon: &str, label: &str, value: &
 fn duty_text(l: &Launcher) -> String {
     match (&l.state.choice.line, &l.state.choice.tour, l.state.choice.free) {
         (_, _, true) | (None, _, _) => "Free drive".into(),
-        (Some(line), Some(t), _) => format!("Line {line} · tour {t}"),
-        (Some(line), None, _) => format!("Line {line} · choose a tour"),
+        (Some(line), Some(t), _) => format!("Line {line} | tour {t}"),
+        (Some(line), None, _) => format!("Line {line} | choose a tour"),
     }
 }
 
@@ -176,11 +176,11 @@ fn time_text(l: &Launcher) -> String {
         None if l.state.choice.weather == "cycle" => "weather cycle".into(),
         None if crate::weather_setup::custom_weather(Some(&l.state.choice.weather)).is_some() => {
             let c=crate::weather_setup::custom_weather(Some(&l.state.choice.weather)).unwrap();
-            format!("custom · {:.0}°C · {:.0}% RH",c.temp_c,c.humidity)
+            format!("custom | {:.0}°C | {:.0}% RH",c.temp_c,c.humidity)
         },
         None => l.state.weathers.iter().find(|w| w.file == l.state.choice.weather).map(|w| w.name.clone()).unwrap_or_else(|| "map weather".into()),
     };
-    format!("{:02}:{:02} · {d} {} {y} · {weather}", l.state.choice.time / 60, l.state.choice.time % 60, &super::ui::MONTHS[(m as usize).clamp(1, 12) - 1][..3])
+    format!("{:02}:{:02} | {d} {} {y} | {weather}", l.state.choice.time / 60, l.state.choice.time % 60, &super::ui::MONTHS[(m as usize).clamp(1, 12) - 1][..3])
 }
 
 fn start_text(l: &Launcher) -> String {
@@ -193,7 +193,7 @@ fn start_text(l: &Launcher) -> String {
             .map(|e| if e.name.is_empty() { format!("entry {}", e.index + 1) } else { e.name.clone() })
             .unwrap_or_else(|| "Automatic".into())
     };
-    format!("{where_} · {:.0} cars", l.state.choice.traffic)
+    format!("{where_} | {:.0} cars", l.state.choice.traffic)
 }
 
 fn play(l: &mut Launcher, body: Rect) {
@@ -318,7 +318,7 @@ fn bar(l: &mut Launcher, r: Rect, title: &str, search: bool) -> bool {
     l.ui.text_in(title, Rect::new(r.x + 56.0, r.y, tw, r.h), 18.0, Weight::Bold, TEXT, Align::Left);
     if search {
         let f = Rect::new(r.x + 60.0 + tw, r.y + 8.0, r.w - tw - 72.0, r.h - 16.0);
-        l.ui.text_input("sheet-search", f, &mut l.phone.filter, "Search…", Some("search"));
+        l.ui.text_input("sheet-search", f, &mut l.phone.filter, "Search...", Some("search"));
     }
     clicked
 }
@@ -422,9 +422,9 @@ fn bus_sheet(l: &mut Launcher, r: Rect) -> bool {
         .filter(|v| allowed.as_ref().map(|a| a.contains(&norm(&v.file))).unwrap_or(true))
         .map(|v| {
             let mut sub = v.manufacturer.clone();
-            sub = format!("{sub}{}{}", if sub.is_empty() { "" } else { " · " }, super::drive::liveries_text(v.paints.len()));
+            sub = format!("{sub}{}{}", if sub.is_empty() { "" } else { " | " }, super::drive::liveries_text(v.paints.len()));
             if !v.missing_packs.is_empty() {
-                sub = format!("{sub} · parts missing");
+                sub = format!("{sub} | parts missing");
             }
             (v.file.clone(), v.name.clone(), sub, v.installed, !v.missing_packs.is_empty())
         })
@@ -434,7 +434,7 @@ fn bus_sheet(l: &mut Launcher, r: Rect) -> bool {
     let mut pick = None;
     l.ui.scroll_area("ps-buses", r, &mut |ui, v| {
         if items.is_empty() {
-            ui.text_in(if loading { "Reading the buses…" } else { "No bus matches." }, Rect::new(v.x + 16.0, v.y, v.w, 40.0), 14.0, Weight::Regular, TEXT_DIM, Align::Left);
+            ui.text_in(if loading { "Reading the buses..." } else { "No bus matches." }, Rect::new(v.x + 16.0, v.y, v.w, 40.0), 14.0, Weight::Regular, TEXT_DIM, Align::Left);
         }
         for (k, (file, name, sub, mod_, incomplete)) in items.iter().enumerate() {
             let rr = Rect::new(v.x, v.y + k as f32 * (ROW_H + 6.0), v.w - 8.0, ROW_H);
@@ -650,7 +650,7 @@ fn roadbook_sheet(l: &mut Launcher, r: Rect) -> bool {
             let head = Rect::new(v.x, y, v.w - 8.0, 54.0);
             ui.p().rounded(head, 8.0, if k == 0 { SELECTED } else { FIELD });
             ui.text_in(
-                &format!("{} · {} → {}", if k == 0 { "Your first trip" } else { "Then" }, if trip.from.is_empty() { "?" } else { &trip.from }, trip.terminus),
+                &format!("{} | {} → {}", if k == 0 { "Your first trip" } else { "Then" }, if trip.from.is_empty() { "?" } else { &trip.from }, trip.terminus),
                 Rect::new(head.x + 12.0, head.y + 7.0, head.w - 24.0, 20.0),
                 13.0,
                 Weight::Bold,
@@ -658,7 +658,7 @@ fn roadbook_sheet(l: &mut Launcher, r: Rect) -> bool {
                 Align::Left,
             );
             ui.text_in(
-                &format!("{} - {} · {:.1} km · {}", super::state::hhmm(trip.departure), super::state::hhmm(trip.arrival), trip.km, if trip.line.is_empty() { "depot run" } else { trip.line.as_str() }),
+                &format!("{} - {} | {:.1} km | {}", super::state::hhmm(trip.departure), super::state::hhmm(trip.arrival), trip.km, if trip.line.is_empty() { "depot run" } else { trip.line.as_str() }),
                 Rect::new(head.x + 12.0, head.y + 30.0, head.w - 24.0, 18.0),
                 11.5,
                 Weight::Regular,
@@ -730,9 +730,9 @@ fn servers_sheet(l: &mut Launcher, r: Rect) -> bool {
             let info = l.state.server_info.get(&entry.address).map(|x| x.1.clone());
             let name = if !entry.name.is_empty() { entry.name.clone() } else { info.as_ref().and_then(|x| x.as_ref().ok()).map(|x| x.name.clone()).unwrap_or_else(|| entry.address.clone()) };
             let sub = match info {
-                Some(Ok(i)) => format!("{} / {} players · {}", i.players, i.max_players, i.motd),
+                Some(Ok(i)) => format!("{} / {} players | {}", i.players, i.max_players, i.motd),
                 Some(Err(e)) => format!("Can't reach it: {e}"),
-                None => "Asking…".into(),
+                None => "Asking...".into(),
             };
             ui.text_in(&name, Rect::new(rr.x + 14.0, rr.y + 7.0, rr.w - 190.0, 21.0), 14.0, Weight::Bold, TEXT, Align::Left);
             ui.text_in(&sub, Rect::new(rr.x + 14.0, rr.y + 31.0, rr.w - 190.0, 18.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
@@ -760,7 +760,7 @@ fn servers_sheet(l: &mut Launcher, r: Rect) -> bool {
 
 fn duty_sheet(l: &mut Launcher, r: Rect) -> bool {
     let q = l.phone.filter.to_lowercase();
-    let lines: Vec<(String, String, usize)> = l.state.lines.iter().filter(|x| x.user_allowed).filter(|x| matches(&q, &format!("{} {}", x.name, x.termini.join(" ")))).map(|x| (x.name.clone(), x.termini.join(" – "), x.tours.len())).collect();
+    let lines: Vec<(String, String, usize)> = l.state.lines.iter().filter(|x| x.user_allowed).filter(|x| matches(&q, &format!("{} {}", x.name, x.termini.join(" ")))).map(|x| (x.name.clone(), x.termini.join(" - "), x.tours.len())).collect();
     let free = l.state.choice.free || l.state.choice.line.is_none();
     let chosen = l.state.choice.line.clone();
     let loading = l.state.loading_lines;
@@ -771,11 +771,11 @@ fn duty_sheet(l: &mut Launcher, r: Rect) -> bool {
             pick = Some(None);
         }
         let mut y = v.y + ROW_H + 14.0;
-        ui.text_in(if loading { "Reading the timetable…" } else if lines.is_empty() { "The map has no lines to drive." } else { "Lines of the timetable" }, Rect::new(v.x + 8.0, y, v.w, 18.0), 12.0, Weight::Medium, TEXT_DIM, Align::Left);
+        ui.text_in(if loading { "Reading the timetable..." } else if lines.is_empty() { "The map has no lines to drive." } else { "Lines of the timetable" }, Rect::new(v.x + 8.0, y, v.w, 18.0), 12.0, Weight::Medium, TEXT_DIM, Align::Left);
         y += 24.0;
         for (name, termini, tours) in &lines {
             let rr = Rect::new(v.x, y, v.w - 8.0, ROW_H);
-            if big_row(ui, &format!("pl-{name}"), rr, &format!("Line {name}"), &format!("{termini} · {tours} tours"), !free && chosen.as_deref() == Some(name.as_str()), None) {
+            if big_row(ui, &format!("pl-{name}"), rr, &format!("Line {name}"), &format!("{termini} | {tours} tours"), !free && chosen.as_deref() == Some(name.as_str()), None) {
                 pick = Some(Some(name.clone()));
             }
             y += ROW_H + 6.0;
@@ -811,8 +811,8 @@ fn tour_sheet(l: &mut Launcher, r: Rect) -> bool {
     let items: Vec<(String, String, bool, Option<String>)> = tours
         .iter()
         .map(|t| {
-            let when = format!("{} – {}", super::state::hhmm(t.first), super::state::hhmm(t.last));
-            let sub = if t.runs { format!("{when} · {} trips · {}", t.trips.len(), t.days) } else { format!("{when} · {} · runs {}", t.days, t.next_run.clone().unwrap_or_else(|| "never".into())) };
+            let when = format!("{} - {}", super::state::hhmm(t.first), super::state::hhmm(t.last));
+            let sub = if t.runs { format!("{when} | {} trips | {}", t.trips.len(), t.days) } else { format!("{when} | {} | runs {}", t.days, t.next_run.clone().unwrap_or_else(|| "never".into())) };
             (t.number.clone(), sub, t.runs, t.next_run.clone())
         })
         .collect();
@@ -887,17 +887,11 @@ fn time_sheet(l: &mut Launcher, r: Rect) -> bool {
             changed |= ui.slider("ps-custom-temp", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.temp_c, -30.0, 45.0, 1.0, "Temperature", &|x| format!("{x:.0} °C"));
             yy += 46.0;
             let t = custom.temp_c;
-            changed |= ui.slider("ps-custom-hum", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.humidity, 0.0, 100.0, 1.0, "Humidity", &|x| format!("{x:.0} % · dew {:.0} °C", crate::weather_setup::dew_point_c(t, x)));
+            changed |= ui.slider("ps-custom-hum", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.humidity, 0.0, 100.0, 1.0, "Humidity", &|x| format!("{x:.0} % | dew {:.0} °C", crate::weather_setup::dew_point_c(t, x)));
             yy += 50.0;
 
-            ui.label(Rect::new(v.x, yy, 120.0, 38.0), "Cloud type");
-            let cloud_labels: Vec<String> = crate::weather_setup::CUSTOM_CLOUDS.iter().map(|x| (*x).to_string()).collect();
-            let mut cloud = custom.cloud;
-            if ui.select("ps-custom-cloud", Rect::new(v.x + 122.0, yy, v.w - 130.0, 38.0), &mut cloud, &cloud_labels) {
-                custom.cloud = cloud;
-                changed = true;
-            }
-            yy += 48.0;
+            changed |= ui.slider("ps-custom-cloud", Rect::new(v.x, yy, v.w - 8.0, 40.0), &mut custom.cloud_cover, 0.0, 1.0, 0.01, "Cloud cover", &|x| if x <= 0.0 { omsi_ui::tr("Clear sky").into_owned() } else { format!("{:.0} %", x * 100.0) });
+            yy += 50.0;
 
             ui.label(Rect::new(v.x, yy, 120.0, 38.0), "Precipitation");
             let precip_labels: Vec<String> = crate::weather_setup::CUSTOM_PRECIP.iter().map(|x| (*x).to_string()).collect();
@@ -1000,7 +994,7 @@ fn time_sheet(l: &mut Launcher, r: Rect) -> bool {
         ("cycle".to_string(), "Weather cycle".to_string(), "Changes every 25-60 minutes, as the month allows".to_string()),
     ]
     .into_iter()
-    .chain(l.state.weathers.iter().map(|w| (w.file.clone(), w.name.clone(), format!("{:.0} °C · {} · {}", w.temp, if w.clouds.is_empty() { "clear" } else { w.clouds.as_str() }, if w.precip.is_empty() { "dry" } else { w.precip.as_str() }))))
+    .chain(l.state.weathers.iter().map(|w| (w.file.clone(), w.name.clone(), format!("{:.0} °C | {} | {}", w.temp, if w.clouds.is_empty() { "clear" } else { w.clouds.as_str() }, if w.precip.is_empty() { "dry" } else { w.precip.as_str() }))))
     .collect();
 
     let chosen = l.state.choice.weather.clone();
@@ -1051,10 +1045,10 @@ fn online(l: &mut Launcher, body: Rect) {
     let (line1, line2, c) = match info.as_ref() {
         Some(Ok(i)) => {
             let map = std::path::Path::new(&i.map.replace('\\', "/")).parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            (format!("{} / {} players online · {map}", i.players, i.max_players), i.motd.clone(), OK)
+            (format!("{} / {} players online | {map}", i.players, i.max_players), i.motd.clone(), OK)
         }
         Some(Err(e)) => (e.clone(), String::new(), DANGER),
-        None => ("Looking for the server…".into(), String::new(), TEXT_DIM),
+        None => ("Looking for the server...".into(), String::new(), TEXT_DIM),
     };
     l.ui.text_in(&line1, Rect::new(tx, card.y + 42.0, tw, 18.0), 13.0, Weight::Medium, c, Align::Left);
     l.ui.text_in(&line2, Rect::new(tx, card.y + 62.0, tw, 30.0), 12.0, Weight::Regular, TEXT_DIM, Align::Left);
@@ -1120,9 +1114,9 @@ fn online(l: &mut Launcher, body: Rect) {
             let info = l.state.server_info.get(&e.address).map(|x| x.1.clone());
             let name = if !e.name.is_empty() { e.name.clone() } else { info.as_ref().and_then(|i| i.as_ref().ok()).map(|i| i.name.clone()).unwrap_or_else(|| e.address.clone()) };
             let sub = match info {
-                Some(Ok(i)) => format!("{} / {} players · {}", i.players, i.max_players, i.motd),
+                Some(Ok(i)) => format!("{} / {} players | {}", i.players, i.max_players, i.motd),
                 Some(Err(err)) => format!("Can't reach it: {err}"),
-                None => "Asking…".into(),
+                None => "Asking...".into(),
             };
             (e.address.clone(), name, sub)
         })

@@ -69,7 +69,7 @@ impl App {
         let raw_dt = (now - self.last).as_secs_f32();
         self.log_frame(raw_dt);
         let profiling = omsi_cfg::flags::OMSI_PROFILE.is_set();
-        if profiling && self.perf.cpu_mark.is_some() && self.perf.frame_times.len() < crate::perf_report::MAX_FRAMES {
+        if profiling && self.perf.profile_mark.is_some() && self.perf.frame_times.len() < crate::perf_report::MAX_FRAMES {
             self.perf.frame_times.push(raw_dt);
         }
         let waited: f64 = ["acquire", "present", "gpu"].iter()
@@ -196,9 +196,9 @@ impl App {
                 hud.update(r, scene, &lines);
                 if let wgpu::CurrentSurfaceTexture::Success(frame)
                 | wgpu::CurrentSurfaceTexture::Suboptimal(frame) =
-                    s.surface.get_current_texture()
+                    s.acquire()
                 {
-                    let view = frame.texture.create_view(&Default::default());
+                    let view = s.view(&r.device, &frame);
                     let cam = Camera {
                         position: DVec3::ZERO,
                         yaw: 0.0,
@@ -221,7 +221,7 @@ impl App {
                         &lighting,
                     );
                     win.pre_present_notify();
-                    frame.present();
+                    s.present(&r.device, &r.queue, frame);
                 }
             }
             return false;

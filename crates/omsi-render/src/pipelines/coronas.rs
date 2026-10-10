@@ -102,7 +102,7 @@ impl Coronas {
         });
         drop(puff_texture);
         log::info!("renderer: compiling the coronas shaders");
-        let corona_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let corona_shader = compile_shader(device, wgpu::ShaderModuleDescriptor {
             label: Some("corona"),
             source: wgpu::ShaderSource::Wgsl(corona_shader_source().into()),
         });
@@ -127,7 +127,7 @@ impl Coronas {
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &CORONA_ATTRIBUTES,
         };
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        compile_pipeline(device, &wgpu::RenderPipelineDescriptor {
             label: Some("corona"),
             layout: Some(&self.pl),
             vertex: wgpu::VertexState {
@@ -155,7 +155,7 @@ impl Coronas {
                 compilation_options: Default::default(),
             }),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(device).as_ref(),
         })
     }
 }
@@ -176,7 +176,7 @@ const PREMULTIPLIED_SNOW: wgpu::BlendState = wgpu::BlendState {
 impl Snow {
     pub(crate) fn new(device: &wgpu::Device, camera_layout: &wgpu::BindGroupLayout) -> Snow {
         // the snowfall (snow.wgsl): the camera group and its own parameters, no vertices
-        let snow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let snow_shader = compile_shader(device, wgpu::ShaderModuleDescriptor {
             label: Some("snow"),
             source: wgpu::ShaderSource::Wgsl(snow_shader_source().into()),
         });

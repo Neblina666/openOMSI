@@ -9,6 +9,8 @@ pub(crate) struct SoundState {
     pub(crate) audio: Option<omsi_audio::AudioEngine>,
     /// Sounds of the world around the camera (rain, footsteps).
     pub(crate) ambience: Option<ambience::Ambience>,
+    /// openOMSI's ambience from recordings (settings `ambient`, `vol_ambient`).
+    pub(crate) soundscape: Option<crate::soundscape::Soundscape>,
     /// Positional voice through GreenTeaSpeak in a session (`voice`).
     pub(crate) voice: Option<crate::voice::Voice>,
 }
@@ -32,8 +34,8 @@ pub(crate) struct VrState {
 
 /// The multiplayer session: the LAN or server connection and the other players seen in it.
 pub(crate) struct NetState {
-    /// Other players on foot whose avatars are drawn (their ids).
-    pub(crate) remote_walkers: Vec<u32>,
+    /// Other players on foot whose avatars are drawn: their ids and figures (`kind`).
+    pub(crate) remote_walkers: Vec<(u32, u64)>,
     /// The player on foot is in this other player's bus (see `lan`: drawn from inside).
     pub(crate) inside_remote: Option<u32>,
     /// A dedicated server said we administer it (`admin`).
@@ -53,6 +55,12 @@ pub(crate) struct Integrations {
     /// stops skipped, services and moves of the bus, trips ended, jolts, tickets sold (see
     /// `plugins::queue_event`).
     pub(crate) plugin_events: Vec<omsi_plugin::GameEvent>,
+    /// The same for events whose values are tables (see `plugins::queue_event_ex`).
+    pub(crate) plugin_events_ex: Vec<(&'static str, Vec<omsi_plugin::api::Value>)>,
+    /// The plugins' sounds playing, and whether each moves with the player's bus.
+    pub(crate) plugin_voices: Vec<(u64, bool)>,
+    /// What the plugins' events last saw of the game (see `plugins::Seen`).
+    pub(crate) plugin_seen: crate::plugins::Seen,
     /// A plugin's `omsi.command` is running: what it does is the plugin's (the `service`
     /// event's `by`).
     pub(crate) plugin_command: bool,
@@ -102,11 +110,18 @@ pub(crate) struct PerfState {
     pub(crate) governor_low: u32,
     /// Cumulative presentation wait at the previous frame, independent of OMSI_PROFILE.
     pub(crate) governor_wait_prev: f64,
+    /// OMSI_PROFILE: the first frame of play (the map loaded), which the warm-up counts from.
+    pub(crate) play_started: Option<Instant>,
     /// OMSI_PROFILE: process CPU seconds, time and frame count once the start-up is over,
     /// for the CPU time a frame costs (the wall time says little on a busy machine).
     pub(crate) cpu_mark: Option<(f64, Instant, u32)>,
-    /// OMSI_PROFILE: the stages when `cpu_mark` was taken, and every frame's time since
-    /// then (s), for the exit summary's percentiles (see `perf_report`).
+    /// OMSI_PROFILE: the CPU time of the thread that runs the frames when `cpu_mark` was
+    /// taken (s), for the CPU time the frame's own steps cost.
+    pub(crate) thread_cpu_mark: Option<f64>,
+    /// OMSI_PROFILE: the process's retired instructions then (macOS).
+    pub(crate) instructions_mark: Option<u64>,
+    /// OMSI_PROFILE: the stages when the warm-up ended (15 s of play), and every frame's time
+    /// since then (s), for the exit summary's percentiles (see `perf_report`).
     pub(crate) profile_mark: Option<crate::perf_report::ProfileMark>,
     pub(crate) frame_times: Vec<f32>,
 }
@@ -244,6 +259,13 @@ pub(crate) struct InputState {
     /// time (a game started with the mouse steering on: wherever the cursor was, the wheel
     /// turned and the bus drove off on full throttle).
     pub(crate) center_cursor: bool,
+    /// `OMSI_INPUT`'s `cruise <km/h>`: the player's bus held at this speed (m/s) along its
+    /// heading until its next crash (the count of crashes when it began), for collision tests.
+    pub(crate) cruise: Option<(f32, u32)>,
+    /// Looking round with a mouse button: the cursor locked and hidden where it stands and
+    /// the view turned by the mouse's own movement (`App::sync_look_hold`); `true`: the look
+    /// locked it itself, `false`: it was the mouse steering's locked cursor already.
+    pub(crate) look_lock: Option<bool>,
     /// The cursor hidden while a controller drives: where it stood.
     pub(crate) cursor_hidden: Option<(f32, f32)>,
     /// The wheel's place when it last counted as moved.
@@ -271,6 +293,8 @@ pub(crate) struct InputState {
     pub(crate) html_pressed: Option<(usize, f32, f32)>,
     /// The same for a page of a scenery object: its map id, script texture index and place.
     pub(crate) html_object_pressed: Option<(i64, usize, f32, f32)>,
+    /// The currently held scenery object switch: its map id and event name.
+    pub(crate) pressed_scenery_object: Option<(i64, String)>,
     /// Cursor movement (logical pixels) while dragging a switch, not yet handed to the
     /// script: `<event>_drag` fires once a frame with it (see `Player::drag`).
     pub(crate) drag_delta: (f32, f32),
@@ -421,7 +445,7 @@ pub(crate) struct SessionState {
     pub(crate) wetness: f32,
     /// How far the cloud cover has drifted with the wind (fractions of its tiling), summed
     /// up frame by frame so that a change of wind does not throw the sky around.
-    pub(crate) cloud_drift: [f32; 2],
+    pub(crate) cloud_drift: [f32; 4],
     /// A change of weather coming in (see `weather_cycle`).
     pub(crate) weather_blend: Option<crate::weather_cycle::Blend>,
     /// The weather cycle, when the weather chosen is `cycle`.

@@ -243,6 +243,7 @@ pub(crate) fn tick_humans(
     if let Some(t) = traffic {
         let (alighting, waiting) = h.stop_wishes();
         t.set_stop_wishes(alighting, waiting);
+        t.bus_loads = h.bus_loads();
         for (id, stop, secs) in h.take_holds() {
             t.hold_boarding(id, stop, secs);
         }
@@ -338,7 +339,9 @@ pub(crate) fn duty_step(
 }
 
 /// The tyres' spray (see `puddles`): what every vehicle's tyres throw up from the water on
-/// the road, `wetness` as wet as the picture draws it, the air moving with `wind`.
+/// the road, `wetness` as wet as the picture draws it, the air moving with `wind`. At a
+/// lower `quality` (`rain::quality`) only the player's bus throws spray (1), or none (0):
+/// what is in the air settles all the same.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn throw_spray(
     spray: &mut puddles::Spray,
@@ -350,15 +353,18 @@ pub(crate) fn throw_spray(
     wind: Vec3,
     world: &World,
     wetness: f32,
+    quality: u8,
 ) {
     let mut vehicles: Vec<(u64, &omsi_sim::VehicleInstance)> = Vec::new();
-    if let Some(p) = player {
+    if let Some(p) = player.filter(|_| quality > 0) {
         vehicles.push((0, &p.vehicle));
     }
-    if let Some(t) = traffic {
-        vehicles.extend(t.cars.iter().map(|c| (c.id.wrapping_add(1), &c.vehicle)));
+    if quality >= 2 {
+        if let Some(t) = traffic {
+            vehicles.extend(t.cars.iter().map(|c| (c.id.wrapping_add(1), &c.vehicle)));
+        }
+        vehicles.extend(remotes.remotes.iter().map(|(id, r)| (puddles::REMOTE_KEY | *id as u64, r.vehicle())));
     }
-    vehicles.extend(remotes.remotes.iter().map(|(id, r)| (puddles::REMOTE_KEY | *id as u64, r.vehicle())));
     spray.frame(dt, &vehicles, eye, wind, &|x, y| puddles::water_at(x, y, world.wet_road_at(x, y, wetness)));
 }
 
@@ -388,7 +394,7 @@ pub(crate) fn light_vehicles<'a>(
 pub(crate) fn picture_lighting(
     daylight: &omsi_sim::Daylight,
     weather: Option<&omsi_content::weather::Weather>,
-    cloud_drift: [f32; 2],
+    cloud_drift: [f32; 4],
     wetness: f32,
     world: Option<&World>,
     inside: Option<&omsi_sim::VehicleInstance>,

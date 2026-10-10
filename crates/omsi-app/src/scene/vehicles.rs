@@ -674,6 +674,7 @@ impl World {
                     extra.display = text_is_display(d.lightmap.is_some(), d.night.is_some());
                     // (the bus's own screen: no glow halo, no FXAA over its letters)
                     extra.screen = true;
+                    // Preserve authored self-illumination.
                     let m = renderer.add_material_extra(
                         scene,
                         Some(*tex),
@@ -684,7 +685,7 @@ impl World {
                         d.night,
                         d.lightmap,
                         None,
-                        [0.0; 3],
+                        d.emissive,
                         extra,
                     );
                     *x = gpu.material(renderer, scene, m);
@@ -1464,7 +1465,9 @@ fn slot_extra(
     // (while it snows the film is the snow-crystal texture, drawn as it is)
     // (all three graphics: OMSI 2's own rain, its texture sliding down the
     // pane, looked like wet paper next to drops that bend the street)
-    extra.rain_film = rain_layer && !snowing() && !omsi_cfg::flags::OMSI_TEXTURE_RAIN.is_set();
+    // (rain quality Low: OMSI 2's own texture rain, no drops to simulate and no picture
+    // behind the glass to copy)
+    extra.rain_film = rain_layer && !snowing() && !omsi_cfg::flags::OMSI_TEXTURE_RAIN.is_set() && crate::rain::quality() > 0;
     // Some mod buses put [matl_noZcheck] on the complete body mesh.
     // That flag is for decals; on a body it disables depth writing and
     // lets the cabin bleed through the outside shell. Keep it on genuine

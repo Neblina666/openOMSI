@@ -30,7 +30,7 @@ impl Overlays {
             ],
         });
         log::info!("renderer: compiling the overlays shaders");
-        let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let overlay_shader = compile_shader(device, wgpu::ShaderModuleDescriptor {
             label: Some("overlay"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../overlay.wgsl").into()),
         });
@@ -51,7 +51,7 @@ impl Overlays {
         let targets = [target(format, Some(PREMUL))];
         let overlay_pipeline_1x = no_vertex_pipeline("overlay 1x", &self.pl, &self.shader, "fs_main", &targets).create(device);
         log::info!("renderer: compiling the VR interface shaders");
-        let xr_ui_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let xr_ui_shader = compile_shader(device, wgpu::ShaderModuleDescriptor {
             label: Some("OpenXR spatial UI"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../xr_ui.wgsl").into()),
         });

@@ -72,16 +72,19 @@ impl TrafficSim {
             .map(|(i, c)| (c.id, i))
             .collect();
         let debug = omsi_cfg::flags::OMSI_DEBUG_TRAFFIC.is_set();
+        self.stats_before();
         let (by_lane, coming, mut reservations) = self.occupancy();
         self.request_lights(player);
         let walkers = self.walker_requests();
         self.run_light_programs(dt);
         let (others, player_standing) = self.track_players(dt, player);
+        self.others_now = others.iter().map(|o| o.1).collect();
         let t_plan = std::time::Instant::now();
         let mut remove = Vec::new();
         let mut frames: Vec<Option<AiFrame>> = vec![None; self.cars.len()];
         let feet = self.footprints();
         self.break_lead_pairs();
+        self.break_rings();
         let ts = TickScene { dt, debug, player, player_standing, others, feet, by_lane, coming, walkers };
         for (i, frame) in frames.iter_mut().enumerate() {
             match self.plan_car(i, &ts, &mut reservations) {
@@ -99,6 +102,7 @@ impl TrafficSim {
             t_par.elapsed().as_secs_f64(),
         ];
         self.debug_tick(debug, player, &others, &frames);
+        self.stats_after(dt, &remove);
         for i in remove.into_iter().rev() {
             let c = self.cars.swap_remove(i);
             // its sounds stop and the renders go back to the world at the next sync
@@ -782,6 +786,7 @@ impl TrafficSim {
                 walkers,
             ),
             None => {
+                self.cars[i].exit_wait = false;
                 let old = std::mem::take(&mut self.cars[i].reserved);
                 for l in old {
                     if let Some(list) = reservations.get_mut(&l) {
@@ -1104,6 +1109,9 @@ impl TrafficSim {
         if (stood > 60.0 && !car.yielding || stood > 150.0) && !car.is_bus() && !car.light_hold && !car.gone
         {
             car.gone = true;
+            if let Some(s) = self.stats.as_mut() {
+                s.window.gave_up += 1;
+            }
             if debug {
                 log::info!(
                     "t={:.1}: car {} stood for {:.0} s: taken off once out of sight",
@@ -1126,6 +1134,13 @@ impl TrafficSim {
             ),
             (true, _) => (why.0, why.1 - car.state.front),
             _ => ("", 0.0),
+        };
+        // whom it stands for (the waits-for graph of `stats`)
+        car.waits_on = match car.why.0 {
+            "lead" | "keep_back" => lead_id,
+            "player" => Some(stats::WAITS_ON_PLAYER),
+            "yield" => car.yield_to,
+            _ => None,
         };
         if car.fresh > 0.0 {
             car.fresh -= dt;

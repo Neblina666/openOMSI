@@ -834,15 +834,18 @@ fn object_lamp(ot: &ObjectType, o: &StagedObject, pos: DVec3, index: &MapIndex) 
 /// Legacy pole fixtures can put the virtual `[maplight]` inside the emitting mesh
 /// (Spandau's Ufo Big puts it above the pole cap, inside the head). The source was
 /// authored for an unoccluded light map, not as a bulb hidden behind opaque geometry.
-/// Require a pole, an enclosing emitting mesh, and a directional emitter whose
-/// output surface is in front of the source. A maplight in a pole shaft below the
-/// lamp, or coincident with its output, is not this embedded-head case.
+/// Require a pole and an enclosing emitting mesh. Directional effects must face
+/// away from the source; omnidirectional effects must share its exact position.
+/// An unrelated effect elsewhere on the same fixture does not qualify the source.
 fn embedded_pole_light(ot: &ObjectType, source: glam::Vec3) -> bool {
     ot.sco.crash_mode_pole.is_some() && ot.meshes.iter().zip(&ot.mesh_def_index).any(|(mesh, &def)| {
         let md = &ot.model.meshes[def];
         md.light_enh_2.iter().any(|effect| {
-            !effect.omni
-                && (source - glam::Vec3::from(effect.pos)).dot(glam::Vec3::from(effect.dir)) < 0.0
+            if effect.omni {
+                source == glam::Vec3::from(effect.pos)
+            } else {
+                (source - glam::Vec3::from(effect.pos)).dot(glam::Vec3::from(effect.dir)) < 0.0
+            }
         }) && mesh_encloses_light(&mesh.0, source)
     })
 }
@@ -997,7 +1000,7 @@ mod embedded_light_tests {
             mesh_def_index: vec![1],
             sound_path: Default::default(), model_dir: Default::default(),
             mesh_visible: vec![None], mesh_pivots: vec![Mat4::IDENTITY],
-            mesh_shadow: vec![false], mesh_casts: vec![true], program: None,
+            mesh_shadow: vec![false], mesh_casts: vec![true], has_mouse_events: false, program: None,
             lower_lods: Vec::new(), lod0_min: 0.0, paint_scheme_count: 0,
             dynamic_textures: Vec::new(), holes: Vec::new(), deform: None,
             collision: None, paint: false, camera: Default::default(),
@@ -1055,6 +1058,36 @@ mod embedded_light_tests {
         add_cube(&mut fixture.meshes[0].0, 0.25, true);
         assert!(!embedded_pole_light(&fixture, glam::Vec3::ZERO),
             "a source in enclosed air does not qualify");
+    }
+
+    #[test]
+    fn omni_pole_sources_require_a_coincident_effect_inside_the_emitting_mesh() {
+        let mut fixture = pole_fixture();
+        let effect = &mut fixture.model.meshes[1].light_enh_2[0];
+        effect.omni = true;
+        effect.pos = [0.0; 3];
+        effect.dir = [0.0; 3]; // Direction is irrelevant for an omnidirectional effect.
+        assert!(embedded_pole_light(&fixture, glam::Vec3::ZERO));
+        let mut state = TileState::default();
+        object_lights(&mut state, &fixture, DVec3::ZERO, Mat4::IDENTITY, None, 456);
+        assert_eq!(state.lights[0].shadow_owner, Some(456));
+
+        fixture.model.meshes[1].light_enh_2[0].pos[0] = 0.01;
+        assert!(!embedded_pole_light(&fixture, glam::Vec3::ZERO),
+            "even a nearby but distinct omni effect does not qualify");
+        fixture.model.meshes[1].light_enh_2[0].pos = [0.0, 0.0, 2.0];
+        assert!(!embedded_pole_light(&fixture, glam::Vec3::new(0.0, 0.0, 2.0)),
+            "a coincident source outside the fixture retains self-shadowing");
+        fixture.model.meshes[1].light_enh_2[0].pos = [0.0; 3];
+        add_cube(&mut fixture.meshes[0].0, 0.25, true);
+        assert!(!embedded_pole_light(&fixture, glam::Vec3::ZERO),
+            "an omni source in enclosed air is not embedded in emitting solid");
+        fixture = pole_fixture();
+        fixture.model.meshes[1].light_enh_2[0].omni = true;
+        fixture.model.meshes[1].light_enh_2[0].pos = [0.0; 3];
+        fixture.sco.crash_mode_pole = None;
+        assert!(!embedded_pole_light(&fixture, glam::Vec3::ZERO),
+            "an embedded light in a building is not a pole fixture");
     }
 
     #[test]

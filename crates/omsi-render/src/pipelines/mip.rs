@@ -11,7 +11,7 @@ pub(crate) struct Mip {
 pub(crate) fn build(device: &wgpu::Device) -> Mip {
     // --- mipmaps on the GPU: the CPU box filter took up to a second per bus spawn
     log::info!("renderer: compiling the mip maps shaders");
-    let mip_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let mip_shader = compile_shader(device, wgpu::ShaderModuleDescriptor {
         label: Some("mip"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../mip.wgsl").into()),
     });

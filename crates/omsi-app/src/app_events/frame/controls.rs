@@ -30,7 +30,7 @@ impl App {
         ctl.ff_fade = self.settings.ff_fade;
         ctl.steer_gain = if self.settings.wheel_lock >= 45.0 { (self.settings.wheel_range / self.settings.wheel_lock).clamp(0.1, 20.0) } else { 1.0 };
         ctl.disabled = self.settings.ctrl_off.split('|').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-        ctl.set_editing(self.menus.game_menu.is_some() || self.menus.chooser.is_some());
+        ctl.set_editing(self.menus.game_menu.is_some() || self.menus.chooser.is_some() || self.photo.is_some());
         let analog = ctl.poll();
         let actions = std::mem::take(&mut ctl.actions);
         let moved = match (analog.steering, self.input.last_ctl_steer) {
@@ -50,6 +50,8 @@ impl App {
             || self.menus.list_kind.is_some()
             || self.menus.navigator.as_ref().is_some_and(|n| n.map_open())
             || crate::plugin_ui::focused(&self.integrations.plugins)
+            || self.photo.is_some()
+            || self.input.look_lock.is_some()
             || !matches!(self.view.as_str(), "driver" | "outside" | "pax");
         let hide = (moved || actions.iter().any(|a| a.1)) && !needs_mouse && !vr_on;
         if self.xr.vr_nav_edit.is_none() && hide != self.input.cursor_hidden.is_some() && (hide || needs_mouse) {
@@ -137,7 +139,9 @@ impl App {
         // (the plugins' panels having the mouse hold the wheel and the pedals as
         // looking round does: the cursor goes to their buttons)
         let panels_mouse = self.plugin_focus();
-        // (the cursor held while the mouse steers, let go when it is wanted: mouse_grab.rs)
+        // (the cursor locked while a mouse button looks round, held while the mouse steers,
+        // let go when it is wanted: mouse_grab.rs)
+        self.sync_look_hold();
         self.sync_mouse_grab();
         if let (true, Some(s)) = (self.mouse_steering_now(), self.gfx.surface.as_ref()) {
             let (w, h) = (s.config.width as f32, s.config.height as f32);

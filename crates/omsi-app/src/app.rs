@@ -49,6 +49,10 @@ pub(crate) struct App {
     pub(crate) settings: settings::Settings,
     /// The exit is under way.
     pub(crate) exiting: bool,
+    /// The pause menu, its windows and the photo mode, drawn with the launcher's toolkit.
+    pub(crate) shell: crate::shell::Shell,
+    /// The photo mode, while it is on.
+    pub(crate) photo: Option<crate::photo::Photo>,
 }
 
 impl App {
@@ -77,12 +81,6 @@ impl App {
     /// The game's window (or the launcher's, handed over on a phone), its surface and the
     /// renderer; then the menu or, when the session is given, the world.
     pub(crate) fn create_window(&mut self, event_loop: &ActiveEventLoop, given: Option<Arc<Window>>) {
-        // Steam's rich presence starts before the game window (see `steam.rs`)
-        #[cfg(steam)]
-        if self.integrations.steam.is_none() {
-            self.integrations.steam = crate::steam::Steam::start();
-        }
-
         // --size sets the window's size in points as well (1600x900 unless given)
         let (lw, lh) = self
             .args
@@ -107,7 +105,7 @@ impl App {
         let resolution = crate::settings::Settings::resolution().filter(|_| self.args.size == crate::cli::DEFAULT_SIZE);
         if let Some((w, h)) = resolution {
             attrs = attrs.with_inner_size(winit::dpi::PhysicalSize::new(w, h));
-            if let Some(m) = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next()) {
+            if let Some(m) = crate::startup::home_monitor(event_loop) {
                 let (sw, sh) = (m.size().width as i32, m.size().height as i32);
                 attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(m.position().x + ((sw - w as i32) / 2).max(0), m.position().y + ((sh - h as i32) * 2 / 5).max(0)));
             }
@@ -120,7 +118,7 @@ impl App {
             log::info!("gamescope (Steam Deck Gaming Mode): the window fills the screen");
         }
         if self.settings.fullscreen || gamescope {
-            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(crate::startup::home_monitor(event_loop))));
         }
         if self.settings.triple.enabled
             && self.settings.triple_span
@@ -153,8 +151,15 @@ impl App {
         }
         // OMSI_BACKGROUND=1: a test window that does not take the keyboard from whoever is
         // working at the screen (OMSI_INPUT drives the handlers directly, it needs no focus)
-        if omsi_cfg::flags::OMSI_BACKGROUND.is_set() {
+        if omsi_cfg::flags::OMSI_BACKGROUND.is_set() || omsi_cfg::flags::OMSI_HIDDEN_WINDOW.is_set() {
             attrs = attrs.with_active(false);
+        }
+        // OMSI_HIDDEN_WINDOW=1: the window is never shown at all, so a benchmark of the
+        // window's own frame (its steps, OMSI_PROFILE's stages) can run beside whoever works
+        // at the screen; macOS then reports it occluded and the frames are drawn into a
+        // texture of its size (see `frame_acquire`)
+        if omsi_cfg::flags::OMSI_HIDDEN_WINDOW.is_set() {
+            attrs = attrs.with_visible(false);
         }
         let window = match given {
             Some(w) => w,
@@ -359,6 +364,7 @@ impl App {
                             }
                         }
                         self.sound.ambience = Some(ambience::Ambience::load(&audio, &self.args.root));
+                        self.sound.soundscape = Some(crate::soundscape::Soundscape::new(self.settings.ambient, self.settings.vol_ambient));
                         self.sound.audio = Some(audio);
                         if let Some(p) = &p {
                             if self.args.cam.is_none() && self.args.view != "free" {
@@ -419,6 +425,7 @@ impl App {
                     }
                     h.exact_fare = self.settings.exact_fare;
                     h.boarding = self.settings.boarding.clone();
+                    h.stand_chance = self.settings.standing_chance;
                     h.voices = match self.settings.pax_voices.as_str() { "off" => 2, "tickets" => 1, _ => 0 };
                     if let Some(p) = self.player.as_mut() {
                         h.set_cabin(&mut p.vehicle);
@@ -613,7 +620,7 @@ impl App {
                 "",
                 done as f32 / total.max(1) as f32,
             );
-            let acquired = s.surface.get_current_texture();
+            let acquired = s.acquire();
             // a swapchain that no longer fits the window (Vulkan says so after the switch
             // to full screen, without a resize event) is made again, as the game's own
             // frames do: left as it was, every later frame of the loading screen failed
@@ -622,7 +629,7 @@ impl App {
             if let wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) = acquired
             {
-                let view = frame.texture.create_view(&Default::default());
+                let view = s.view(&renderer.device, &frame);
                 // the tiles loaded so far stay out of the picture: the camera looks at nothing
                 let blank = Camera {
                     position: DVec3::new(0.0, 0.0, -1.0e6),
@@ -647,7 +654,7 @@ impl App {
                     &lighting,
                 );
                 win.pre_present_notify();
-                frame.present();
+                s.present(&renderer.device, &renderer.queue, frame);
                 self.renderer = Some(renderer);
             } else {
                 self.renderer = Some(renderer);
@@ -930,7 +937,7 @@ impl CamCarry {
 
 impl CamBlend {
     /// How far along the way from the old camera to the new one: ease-out
-    /// `s = 1-(1-t)^3` — fast off the mark, settling softly, so adjacent
+    /// `s = 1-(1-t)^3` - fast off the mark, settling softly, so adjacent
     /// seats snap round without lagging behind the key.
     pub fn progress(&self) -> f32 {
         let t = self.t.clamp(0.0, 1.0);

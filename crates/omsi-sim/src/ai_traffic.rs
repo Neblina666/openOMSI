@@ -8,6 +8,7 @@
 
 pub mod bus_service;
 pub mod control;
+pub mod deadlock;
 pub mod density;
 pub mod dormant;
 pub mod junctions;
@@ -19,8 +20,11 @@ pub mod obstacles;
 pub mod parked;
 pub mod planning;
 pub mod setup;
+pub mod stats;
 pub mod tick;
 pub mod viewer;
+#[cfg(test)]
+mod scenario_tests;
 #[cfg(test)]
 mod tests;
 
@@ -98,6 +102,10 @@ pub struct TrafficSim {
     /// on the roads - no aircraft, no parked car pulling out - while `target` is 0.
     pub lights_only: bool,
     pub spawn_radius: f64,
+    /// Since when (sim time) fewer than half the cars asked for drive about the player: open
+    /// country, where nothing within `NEAR_HIDE` is ever out of sight and a car coming along
+    /// the road could never be woken (see `omsi-app`'s `wake_dormant`).
+    pub starved_since: Option<f32>,
     pub time: f32,
     /// Where the camera is (the window sets it before `sync`): far cars show their script
     /// textures as stand-ins.
@@ -113,6 +121,8 @@ pub struct TrafficSim {
     /// aboard wants to get off, the stops where somebody waits. None without passengers:
     /// every bus then serves every stop.
     pub stop_wishes: Option<(hashbrown::HashSet<u64>, hashbrown::HashSet<i64>)>,
+    /// How full each timetable bus is (`PeopleSim::bus_loads`), for the departure displays.
+    pub bus_loads: hashbrown::HashMap<u64, f32>,
     /// Seconds the player's vehicle has been standing.
     pub player_still: f32,
     /// Time of day (seconds since midnight); light cycles and timetables run on it.
@@ -238,4 +248,9 @@ pub struct TrafficSim {
     /// Cars the last `tick` took off the road (their ids): their sounds and pictures are
     /// for the game to let go (see omsi-app's `Traffic::tick`).
     pub retired: Vec<u64>,
+    /// The LAN players' vehicles as of this tick (`others` is taken for the tick's scene):
+    /// the lane changes look at them (`players_on`).
+    pub others_now: Vec<PlayerBox>,
+    /// `OMSI_TRAFFIC_STATS`: the flow statistics of the run (see `stats`).
+    pub stats: Option<Box<stats::TrafficStats>>,
 }

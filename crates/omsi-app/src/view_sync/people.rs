@@ -24,6 +24,8 @@ use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod animation;
+
 /// The renderer's side of the people, kept apart from the simulation (`view_sync::SimView`):
 /// it starts afresh with every `Humans` (`PeopleView::new`, by `Humans::new`).
 #[derive(Default)]
@@ -40,6 +42,8 @@ pub(crate) struct PeopleView {
     pub(crate) gpu_materials: HashMap<(usize, usize, usize), Vec<MaterialId>>,
     pub(crate) spare: HashMap<(usize, usize, usize), Vec<(MeshId, usize)>>,
     pub(crate) sync_frame: u32,
+    /// Animation choice for this session, refreshed on Android in-process launches.
+    pub(crate) enhanced_poses: bool,
     /// Simulation time of the last `sync`.
     pub(crate) last_sync: f64,
     /// Frames synced, people posed and skinned, the time that took and the part of it spent
@@ -59,6 +63,7 @@ impl PeopleView {
             gpu_materials: HashMap::new(),
             spare: HashMap::new(),
             sync_frame: 0,
+            enhanced_poses: animation::enabled(),
             last_sync: 0.0,
             pose_stats: (0, 0, 0.0, 0.0),
             trace: omsi_cfg::flags::OMSI_TRACE_PAX.var().and_then(|f| std::fs::File::create(f).ok()).map(|f| {
@@ -260,7 +265,7 @@ impl Humans {
     /// Skin the people due for a new pose and push transforms to the renderer. Near people
     /// are posed every frame, far ones every few frames and people out of view rarely; the
     /// posing and skinning run in parallel.
-    pub(super) fn sync(&mut self, view: &mut PeopleView, renderer: &Renderer, scene: &mut Scene, camera: DVec3) {
+    pub(super) fn sync(&mut self, view: &mut PeopleView, world: &World, renderer: &Renderer, scene: &mut Scene, camera: DVec3) {
         self.catch_up_bodies(view, renderer, scene);
         for inst in view.hidden.drain(..) {
             renderer.set_params(scene, inst, &[], false, &[]);
@@ -309,10 +314,22 @@ impl Humans {
             );
         }
         let n_due = due.iter().filter(|d| **d).count();
+        let enhanced = view.enhanced_poses;
+        let buses: HashMap<_, _> = if enhanced {
+            self.sim.last_buses.iter().map(|b| (b.id, b)).collect()
+        } else {
+            HashMap::new()
+        };
         let pose_one = |p: &mut Person| {
-            let Person { anim, ty, skins, skin_bones, pose_changed, .. } = p;
+            // Preserve the OMSI-original pose unless the enhanced A/B mode is requested.
+            let bones = if enhanced && p.puppet.is_none() {
+                let dt = (sdt * p.since_posed.max(1) as f32).min(0.25);
+                animation::bones(p, dt, world, &buses)
+            } else {
+                omsi_sim::human::slots_from_omsi(&p.anim.bones(&p.ty.omsi))
+            };
+            let Person { ty, skins, skin_bones, pose_changed, .. } = p;
             *pose_changed = false;
-            let bones = omsi_sim::human::slots_from_omsi(&anim.bones(&ty.omsi));
             if bones.iter().any(|b| !b.is_finite()) && !skins.is_empty() {
                 // keep the last good mesh (the rest pose would be the file's T-pose)
                 return;

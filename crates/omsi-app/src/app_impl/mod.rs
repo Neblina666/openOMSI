@@ -15,6 +15,7 @@ mod menus;
 mod mouse;
 mod mouse_grab;
 mod saves;
+mod shell_link;
 mod vehicles;
 mod view;
 mod voice_tick;

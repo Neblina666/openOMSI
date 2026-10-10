@@ -13,7 +13,7 @@ pub(crate) struct Upscale {
 pub(crate) fn build(device: &wgpu::Device, format: wgpu::TextureFormat) -> Upscale {
     // --- render scale: the smaller 3D picture scaled up to the window
     log::info!("renderer: compiling the upscaler shaders");
-    let upscale_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let upscale_shader = compile_shader(device, wgpu::ShaderModuleDescriptor {
         label: Some("upscale"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../upscale.wgsl").into()),
     });

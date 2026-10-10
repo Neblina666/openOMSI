@@ -35,6 +35,13 @@ pub(crate) struct MouseGrab {
     /// The cursor was put back in the middle and the system's echo of that is awaited
     /// (an event from before the move still lies outside the middle and is not movement).
     warp_pending: bool,
+    /// Reports outside the middle since the cursor was put back: a pointer that is not
+    /// moved by putting it back (a graphics tablet's pen tells where it stands) never
+    /// echoes, and every one of its reports was ignored - the wheel stood at full lock (#1945).
+    stray: u8,
+    /// Where the system holds the cursor while it is locked (the middle it was put in):
+    /// let go, the cursor is there - its reports go on from there.
+    pub(crate) held_at: Option<(f32, f32)>,
 }
 
 /// A cursor event while the mouse steers.
@@ -44,6 +51,9 @@ pub(crate) enum CursorStep {
     Ignore,
     /// Taken; `warp`: put the cursor back in the middle of the window now.
     Moved { warp: bool },
+    /// The pointer stays where the hand holds it whatever the window does (a tablet): hold
+    /// it no longer and steer by where it is.
+    Absolute,
 }
 
 impl MouseGrab {
@@ -63,9 +73,18 @@ impl MouseGrab {
         let outer = (x - centre.0).abs() > size.0 * 0.25 || (y - centre.1).abs() > size.1 * 0.25;
         let warping = self.mode == Some(GrabMode::Warp);
         if warping && self.warp_pending && outer {
+            self.stray = self.stray.saturating_add(1);
+            if self.stray > 4 {
+                self.warp_pending = false;
+                self.stray = 0;
+                self.at = Some((x, y));
+                self.last = Some((x, y));
+                return CursorStep::Absolute;
+            }
             return CursorStep::Ignore;
         }
         self.warp_pending = false;
+        self.stray = 0;
         let last = self.last.unwrap_or(from);
         self.add(from, x - last.0, y - last.1);
         if warping && outer {
@@ -87,6 +106,7 @@ impl MouseGrab {
     /// Held (`mode`) with the cursor put at `centre` (None: it could not be moved).
     pub(crate) fn caught(&mut self, mode: GrabMode, centre: Option<(f32, f32)>) {
         self.mode = Some(mode);
+        self.held_at = centre;
         if centre.is_some() {
             self.last = centre;
             self.warp_pending = mode == GrabMode::Warp;
@@ -125,7 +145,59 @@ impl App {
     /// the background).
     pub(crate) fn mouse_steering_now(&self) -> bool {
         self.input.mouse_drive && self.mouse_steers_in_view() && !self.input.mouse_look && !self.input.input_away
-            && !self.plugin_focus() && self.menus.game_menu.is_none()
+            && !self.plugin_focus() && self.menus.game_menu.is_none() && self.photo.is_none()
+    }
+
+    /// Looking round with a mouse button held (the right, the middle, a drag in the photo
+    /// mode): the cursor is locked where it stands and shows OMSI's four arrows, and the view
+    /// turns by the mouse's own movement (`look_raw`) - nothing moves the cursor, so it
+    /// neither stops at the screen's edge nor jumps anywhere when the button comes up, and
+    /// the steering's locked cursor simply stays locked and hidden. Where the system
+    /// cannot lock it (Windows, X11) the cursor's way turns the view as before.
+    pub(crate) fn sync_look_hold(&mut self) {
+        let photo_look = self.photo.as_ref().is_some_and(|p| p.looking);
+        let want = (photo_look || (self.input.mouse_look && self.input.both_drag.is_none()))
+            && self.input.window_focused
+            && !self.input.input_away
+            && !self.input.touch.enabled
+            && self.xr.vr_nav_edit.is_none()
+            && !omsi_cfg::flags::OMSI_BACKGROUND.is_set()
+            && !omsi_cfg::flags::OMSI_HIDDEN_WINDOW.is_set();
+        if want == self.input.look_lock.is_some() {
+            return;
+        }
+        if want {
+            let Some(win) = self.window.as_ref() else { return };
+            if self.input.mouse_grab.mode == Some(GrabMode::Locked) {
+                self.input.look_lock = Some(false);
+            } else if win.set_cursor_grab(winit::window::CursorGrabMode::Locked).is_ok() {
+                self.input.look_lock = Some(true);
+            } else {
+                return;
+            }
+            // (the cursor shows the four arrows where it stands; the steering's locked cursor
+            // stays hidden - it stands in the middle of the window, and the steering cross is
+            // the mouse's place meanwhile)
+            if self.input.look_lock == Some(true) {
+                win.set_cursor_visible(true);
+                self.set_cursor_kind(3);
+            }
+            return;
+        }
+        match self.input.look_lock.take() {
+            Some(true) => {
+                if let Some(win) = self.window.as_ref() {
+                    let _ = win.set_cursor_grab(winit::window::CursorGrabMode::None);
+                }
+            }
+            Some(false) | None => {}
+        }
+        self.set_cursor_kind(0);
+        // (the steering's hold as it is to be now, and the cursor's shape)
+        self.sync_mouse_grab();
+        if self.photo.is_none() {
+            self.update_hover();
+        }
     }
 
     /// Where the interface draws the steering cross while the cursor is hidden and held
@@ -133,7 +205,10 @@ impl App {
     /// steering point, kept in the window. None while the cursor shows itself.
     pub(crate) fn steer_cross_point(&self) -> Option<(f32, f32)> {
         let hidden = matches!(self.input.mouse_grab.mode, Some(GrabMode::Locked | GrabMode::Warp));
-        if !hidden || !self.mouse_steering_now() {
+        // (looking round with the cursor locked the wheel stays where the cross shows it)
+        let looking = self.input.look_lock == Some(false) && self.input.mouse_drive && self.mouse_steers_in_view()
+            && self.menus.game_menu.is_none() && self.photo.is_none();
+        if !hidden || !(self.mouse_steering_now() || looking) {
             return None;
         }
         self.input.mouse_grab.window_point(self.window_size()?)
@@ -146,6 +221,10 @@ impl App {
     /// Catch the cursor while the mouse steers in the window that has the focus, and let it
     /// go when it does not.
     pub(crate) fn sync_mouse_grab(&mut self) {
+        // (looking round holds the cursor locked meanwhile: `sync_look_hold`)
+        if self.input.look_lock.is_some() {
+            return;
+        }
         // (the VR navigator's editor holds the cursor itself)
         if self.xr.vr_nav_edit.is_some() {
             self.input.mouse_grab.mode = None;
@@ -163,7 +242,21 @@ impl App {
         // (not a test window in the background, OMSI_BACKGROUND: the cursor is whoever's
         // works at the screen)
         let want = steering && self.input.window_focused && !vr_on && !self.input.touch.enabled
-            && !omsi_cfg::flags::OMSI_BACKGROUND.is_set();
+            && !omsi_cfg::flags::OMSI_BACKGROUND.is_set()
+            && !omsi_cfg::flags::OMSI_HIDDEN_WINDOW.is_set();
+        // (the setting off: the cursor stays the system's crosshair, free and shown - it
+        // shows the point without the frame's delay, #1948 - and its place steers)
+        if want && !self.settings.mouse_hold {
+            match self.input.mouse_grab.mode {
+                Some(GrabMode::Plain) => {}
+                Some(mode) => {
+                    self.free_cursor(mode);
+                    self.input.mouse_grab.mode = Some(GrabMode::Plain);
+                }
+                None => self.input.mouse_grab.mode = Some(GrabMode::Plain),
+            }
+            return;
+        }
         match (self.input.mouse_grab.mode, want) {
             (None, true) => self.catch_cursor(),
             (Some(mode), false) => self.free_cursor(mode),
@@ -206,6 +299,18 @@ impl App {
             return;
         }
         win.set_cursor_visible(true);
+        // A locked cursor stands where it was put when it was caught, and that is where the
+        // system reports it from once it is let go: the cursor's place is taken from there,
+        // and it is not moved. (Moved to where the mouse steered, the first report still came
+        // from the middle, and looking round with the right button turned the view back by
+        // that much and forward again on the next report, as the button went down.)
+        if mode == GrabMode::Locked {
+            if let Some(c) = self.input.mouse_grab.held_at.take() {
+                self.input.cursor = c;
+                log::info!("mouse steering: cursor let go");
+                return;
+            }
+        }
         // the cursor shows where the mouse steered (held at the window's edges) - not when
         // the focus went to another window: the cursor is that one's
         if self.input.window_focused {
@@ -219,6 +324,10 @@ impl App {
     /// to the steering point. The place the rest of the game is to take as the cursor's, or
     /// None when the report is no movement of the hand.
     pub(crate) fn steer_cursor_event(&mut self, x: f32, y: f32) -> Option<(f32, f32)> {
+        // (the cursor locked for looking round: its reports are no movement)
+        if self.input.look_lock.is_some() {
+            return None;
+        }
         if !self.mouse_steering_now() {
             // (still held: let go at once - the report is the held cursor's)
             if let Some(mode) = self.input.mouse_grab.mode.filter(|_| self.xr.vr_nav_edit.is_none()) {
@@ -237,6 +346,16 @@ impl App {
         let from = self.input.cursor;
         match self.input.mouse_grab.cursor_at(x, y, from, size) {
             CursorStep::Ignore => None,
+            CursorStep::Absolute => {
+                // (shown and free, and its place steers: the `Plain` hold)
+                if let Some(win) = self.window.as_ref() {
+                    let _ = win.set_cursor_grab(winit::window::CursorGrabMode::None);
+                    win.set_cursor_visible(true);
+                }
+                self.input.mouse_grab.mode = Some(GrabMode::Plain);
+                log::info!("mouse steering: the pointer does not follow the window (a tablet?); steering by where it is");
+                self.steer_point_moved(size)
+            }
             CursorStep::Moved { warp } => {
                 if warp {
                     let moved = self.window.as_ref().is_some_and(|win| win.set_cursor_position(
@@ -298,6 +417,19 @@ mod tests {
         g.add((0.0, 0.0), -9000.0, 0.0);
         g.clamp(SIZE, steer_reach(0.0, 1.0));
         assert_eq!(g.at.unwrap().0, 0.0);
+    }
+
+    /// A tablet's pen reports where it stands, wherever the window puts the cursor: after a
+    /// few reports that never come back to the middle the steering follows the pen (#1945).
+    #[test]
+    fn a_pointer_that_is_not_put_back_steers_by_where_it_is() {
+        let mut g = MouseGrab::default();
+        g.caught(GrabMode::Warp, Some((800.0, 450.0)));
+        // the pen far right: the cursor put back in the middle, and the pen is there again
+        let reports: Vec<CursorStep> = (0..6).map(|_| g.cursor_at(1500.0, 450.0, (800.0, 450.0), SIZE)).collect();
+        assert_eq!(reports.iter().filter(|r| **r == CursorStep::Ignore).count(), 4);
+        assert_eq!(reports[4], CursorStep::Absolute);
+        assert_eq!(g.at, Some((1500.0, 450.0)));
     }
 
     #[test]

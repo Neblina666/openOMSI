@@ -87,6 +87,7 @@ impl App {
             }
             if let Some(wt) = &self.session.weather {
                 let (kind, rate) = precip_of(wt);
+                crate::rain::set_quality(&self.settings.rain_quality);
                 self.session.rain.set(kind, rate);
                 // [wind] direction (deg) speed (m/s)
                 let wind = crate::rain::weather_wind(wt);
@@ -123,6 +124,7 @@ impl App {
                         spray_wind,
                         w,
                         wetness,
+                        crate::rain::quality(),
                     );
                     self.session.spray.sprites(cam.position, &mut scene.smoke);
                     *self.perf.profile.entry("lights.spray").or_default() += __ts.elapsed().as_secs_f64();
@@ -155,10 +157,37 @@ impl App {
                     }
                     let inside = self.cam.in_cab;
                     let __tm = Instant::now();
+                    // openOMSI's ambience; with its recordings the street's rain is its own
+                    let ours = if let Some(s) = self.sound.soundscape.as_mut() {
+                        s.enabled = self.settings.ambient;
+                        s.volume = self.settings.vol_ambient;
+                        let people = self.session.humans.as_ref().map(|h| h.people.iter().filter(|p| (p.position - cam.position).length() < 40.0).count() as u32).unwrap_or(0);
+                        let open = self.player.as_ref().and_then(|p| p.vehicle.var("Snd_OutsideVol")).unwrap_or(0.0);
+                        s.update(
+                            a,
+                            crate::soundscape::Moment {
+                                world: self.world.as_deref(),
+                                weather: Some(wt),
+                                clock: &self.clock,
+                                sun: daylight.altitude_deg,
+                                wetness,
+                                ear: cam.position,
+                                inside,
+                                open,
+                                people,
+                                paused: self.paused,
+                                dt,
+                            },
+                        );
+                        s.active()
+                    } else {
+                        false
+                    };
+                    *self.perf.profile.entry("lights.soundscape").or_default() += __tm.elapsed().as_secs_f64();
                     amb.update(
                         a,
                         dt,
-                        (kind, rate),
+                        if ours { (0, 0.0) } else { (kind, rate) },
                         inside,
                         street_condition(wt, self.session.wetness),
                         cam.position,
@@ -172,6 +201,10 @@ impl App {
                         if LAST.swap(bucket, std::sync::atomic::Ordering::Relaxed) != bucket
                         {
                             log::info!("sound: environment - {} (precip {kind} {rate:.2}, StreetCond {:.2}, {} voices)", amb.last, street_condition(wt, self.session.wetness), a.voice_count());
+                            if let Some(sc) = self.sound.soundscape.as_mut() {
+                                let heard = sc.take_heard();
+                                log::info!("sound: ambience - {}; heard {heard}", sc.last);
+                            }
                         }
                     }
                 }

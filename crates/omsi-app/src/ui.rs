@@ -537,7 +537,7 @@ pub struct Ui {
 }
 
 /// Between the information bar's parts.
-pub(crate) const INFO_SEP: &str = "   ·   ";
+pub(crate) const INFO_SEP: &str = "   |   ";
 
 /// The information bar's parts in rows no wider than `room` (as `width` measures a text),
 /// each as many parts as fit: in one line it ran off both sides of a narrow window, and on a
@@ -917,7 +917,7 @@ impl Ui {
                 y += 5.0 * s;
             }
             let tr = |t: &str| omsi_ui::tr(t).into_owned();
-            let foot = format!("{} {}/{}   ·   {}   ·   {}   ·   {}", tr("Page"), at + 1, count, tr("Enter next"), tr("Page Up back"), tr("Ctrl+T hide"));
+            let foot = format!("{} {}/{}   |   {}   |   {}   |   {}", tr("Page"), at + 1, count, tr("Enter next"), tr("Page Up back"), tr("Ctrl+T hide"));
             let l = self.text.label(r, scene, &foot, (12.0 * s) as u32, [150, 150, 150, 0]);
             y += 4.0 * s;
             items.push((l.tex, [x + pad, y, x + pad + l.w as f32, y + l.h as f32]));
@@ -1376,10 +1376,10 @@ fn clip_bold(tc: &TextCache, text: &str, px: f32, width: f32) -> String {
         return text.to_string();
     }
     let mut out: String = text.chars().collect();
-    while !out.is_empty() && tc.width_bold(&format!("{out}…"), px) > width {
+    while !out.is_empty() && tc.width_bold(&format!("{out}..."), px) > width {
         out.pop();
     }
-    format!("{}…", out.trim_end())
+    format!("{}...", out.trim_end())
 }
 
 /// The distance of the point (`px`, `py`) from the rounded rectangle at (`x0`, `y0`) of
@@ -2083,7 +2083,7 @@ impl Ui {
         }
         // the keys, quietly at the bottom, where there is a keyboard
         if keys {
-            let hint = omsi_ui::tr("Esc resumes  ·  P pauses").into_owned();
+            let hint = omsi_ui::tr("Esc resumes  |  P pauses").into_owned();
             let hint = clip_to(&self.text, &hint, 11.0 * s, rail_w - bx * 2.0);
             self.put(r, scene, &hint, (11.0 * s) as u32, OFF_INK, bx, f.height - 20.0 * s);
         }

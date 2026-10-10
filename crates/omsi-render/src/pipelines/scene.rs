@@ -27,7 +27,7 @@ impl SceneBase {
         // One module for both paths: the enhanced fragment shader shares the vertex shader,
         // which the depth prepass relies on to the last bit (see `VsOut::clip`).
         log::info!("renderer: compiling the scene shaders");
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = compile_shader(device, wgpu::ShaderModuleDescriptor {
             label: Some("omsi"),
             source: wgpu::ShaderSource::Wgsl(
                 scene_shader_source(GL_BACKEND.load(std::sync::atomic::Ordering::Relaxed)).into(),
@@ -97,7 +97,7 @@ impl SceneBase {
         samples: u32,
     ) -> wgpu::RenderPipeline {
         let use_alpha_to_coverage = alpha_to_coverage && samples > 1;
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        compile_pipeline(device, &wgpu::RenderPipelineDescriptor {
             label: Some("omsi"),
             layout: Some(&self.layout),
             vertex: wgpu::VertexState {
@@ -155,7 +155,7 @@ impl SceneBase {
                 },
             }),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(device).as_ref(),
         })
     }
 
@@ -209,7 +209,7 @@ pub(crate) fn prepass(device: &wgpu::Device, scene: &SceneBase, msaa: u32) -> Pr
             2 => "fs_transmap_depth",
             _ => unreachable!(),
         };
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        compile_pipeline(device, &wgpu::RenderPipelineDescriptor {
             label: Some("depth prepass"),
             layout: Some(&prepass_pl),
             vertex: wgpu::VertexState {
@@ -234,7 +234,7 @@ pub(crate) fn prepass(device: &wgpu::Device, scene: &SceneBase, msaa: u32) -> Pr
                 compilation_options: Default::default(),
             }),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(device).as_ref(),
         })
     };
     let make_prepass = |kind: u8, cull: bool| make_prepass_samples(kind, cull, 1, false);

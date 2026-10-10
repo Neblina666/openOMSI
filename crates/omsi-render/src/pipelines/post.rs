@@ -16,7 +16,7 @@ pub(crate) struct Post {
 pub(crate) fn build(device: &wgpu::Device, format: wgpu::TextureFormat, hdr_format: wgpu::TextureFormat, white_texture: &GpuTexture) -> Post {
     // --- enhanced graphics: the post passes (glow, metering, adaptation, tone curve, FXAA)
     log::info!("renderer: compiling the post passes shaders");
-    let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let post_shader = compile_shader(device, wgpu::ShaderModuleDescriptor {
         label: Some("post"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../post.wgsl").into()),
     });

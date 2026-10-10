@@ -1279,6 +1279,7 @@ impl World {
             || !script_texts.is_empty()
             || !html_pages.is_empty()
             || !ot.dynamic_textures.is_empty()
+            || ot.has_mouse_events
         {
             let arrivals = inst.wants_arrivals();
             // (a scripted object with [terrainmapping] slots had more instances

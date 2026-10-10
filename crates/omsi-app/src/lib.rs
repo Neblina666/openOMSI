@@ -32,6 +32,8 @@ mod updater;
 mod update_watch;
 mod presence;
 mod ambience;
+mod soundscape;
+mod wheel_surface;
 mod camera_arm;
 mod career;
 mod describe;
@@ -68,6 +70,8 @@ mod schedule;
 mod schedule_paper;
 mod real_time;
 mod settings;
+mod shell;
+mod photo;
 mod telemetry;
 mod threads;
 mod tiles;
@@ -107,6 +111,7 @@ mod on_foot;
 mod route_arrows;
 mod server;
 mod player;
+mod plugin_io;
 mod plugin_ui;
 mod plugins;
 mod services;
@@ -240,7 +245,7 @@ pub fn run() -> Result<()> {
         return launcher::run(graphics_instance());
     }
     let Some(app) = make_app(args, server_cfg)? else { return Ok(()) };
-    let event_loop = EventLoop::new()?;
+    let event_loop = game_event_loop()?;
     // SIGTERM (the launcher's Stop) and Ctrl+C end the session the way Escape does
     let proxy = event_loop.create_proxy();
     quit::install(move |_| {
@@ -252,6 +257,17 @@ pub fn run() -> Result<()> {
     lan_mods::clean_up();
     r?;
     Ok(())
+}
+
+/// The game's event loop. With OMSI_HIDDEN_WINDOW the process stays out of the Dock and the
+/// menu bar on macOS, as its window stays out of sight.
+fn game_event_loop() -> Result<EventLoop<()>> {
+    #[cfg(target_os = "macos")]
+    if omsi_cfg::flags::OMSI_HIDDEN_WINDOW.is_set() {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        return Ok(EventLoop::builder().with_activation_policy(ActivationPolicy::Accessory).build()?);
+    }
+    Ok(EventLoop::new()?)
 }
 
 /// The showroom is drawn the way the game will be.
@@ -493,6 +509,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
 /// The game's App for `args` and `settings`, every part of it as it starts (the window comes
 /// later).
 fn assemble_app(args: Args, settings: settings::Settings) -> App {
+    rain::set_quality(&settings.rain_quality);
     let view = args.view.clone();
     let args_root_for_keys = args.root.clone();
     let clock_note = args.clock_moved.clone();
@@ -501,6 +518,10 @@ fn assemble_app(args: Args, settings: settings::Settings) -> App {
     let is_server = args.server.is_some();
     // What loads, starts or reads the clock, made one after the other in a fixed order before
     // the App and its groups are put together (their logs and threads come in this order).
+    // Steam must be initialized before the graphics instance and window so its overlay can
+    // hook the rendering process before the first surface is created.
+    #[cfg(steam)]
+    let steam = if is_server { None } else { crate::steam::Steam::start() };
     let instance = graphics_instance();
     let vr_nav_profiles = crate::vr_navigator::Profiles::load();
     let ui = ui::Ui::new();
@@ -579,7 +600,7 @@ fn assemble_app(args: Args, settings: settings::Settings) -> App {
             career: Default::default(),
             journey: None,
             wetness: 0.0,
-            cloud_drift: [0.0; 2],
+            cloud_drift: [0.0; 4],
             weather_blend: None,
             weather_cycle: None,
             metar_rx: None,
@@ -660,7 +681,10 @@ fn assemble_app(args: Args, settings: settings::Settings) -> App {
             governor: (0.0, 0, 0.0),
             governor_low: 0,
             governor_wait_prev: 0.0,
+            play_started: None,
             cpu_mark: None,
+            thread_cpu_mark: None,
+            instructions_mark: None,
             profile_mark: None,
             frame_times: Vec::new(),
         },
@@ -668,6 +692,7 @@ fn assemble_app(args: Args, settings: settings::Settings) -> App {
             radio,
             audio: None,
             ambience: None,
+            soundscape: None,
             voice: None,
         },
         clock: omsi_sim::SimClock::default(),
@@ -698,6 +723,8 @@ fn assemble_app(args: Args, settings: settings::Settings) -> App {
             mouse_grab: Default::default(),
             steer_cursor: None,
             center_cursor: false,
+            cruise: None,
+            look_lock: None,
             cursor_hidden: None,
             last_ctl_steer: None,
             mouse_pedals: (0.0, 0.0),
@@ -710,6 +737,7 @@ fn assemble_app(args: Args, settings: settings::Settings) -> App {
             dragging: false,
             html_pressed: None,
             html_object_pressed: None,
+            pressed_scenery_object: None,
             drag_delta: (0.0, 0.0),
             cursor_kind: 0,
             touch,
@@ -719,12 +747,15 @@ fn assemble_app(args: Args, settings: settings::Settings) -> App {
         integrations: Integrations {
             plugin_keys: Vec::new(),
             plugin_events: Vec::new(),
+            plugin_events_ex: Vec::new(),
+            plugin_voices: Vec::new(),
+            plugin_seen: Default::default(),
             plugin_command: false,
             plugin_panels: Default::default(),
             discord: None,
             discord_t: 0.0,
             #[cfg(steam)]
-            steam: None,
+            steam,
             update_watch,
             presence,
             plugins: None,
@@ -739,6 +770,8 @@ fn assemble_app(args: Args, settings: settings::Settings) -> App {
         service_msg: clock_note.map(|m| (m, 10.0)),
         settings,
         exiting: false,
+        shell: crate::shell::Shell::new(),
+        photo: None,
     }
 }
 

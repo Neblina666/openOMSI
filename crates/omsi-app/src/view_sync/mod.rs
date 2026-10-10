@@ -84,6 +84,6 @@ pub(crate) fn sync(what: ViewSync<'_>, view: &mut SimView, world: &World, render
         if let Some(bus) = bus {
             humans.sync_money(&mut view.people, world, renderer, scene, bus);
         }
-        humans.sync(&mut view.people, renderer, scene, camera);
+        humans.sync(&mut view.people, world, renderer, scene, camera);
     }
 }

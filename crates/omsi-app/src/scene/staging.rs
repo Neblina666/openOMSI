@@ -19,6 +19,8 @@ pub struct ObjectType {
     pub mesh_shadow: Vec<bool>,
     /// `[shadow]` per loaded mesh: the meshes OMSI casts (stencil) shadows from.
     pub mesh_casts: Vec<bool>,
+    /// Whether any loaded mesh carries a `[mouseevent]`.
+    pub has_mouse_events: bool,
     /// Compiled scripts when the object is scripted or animated.
     pub program: Option<Arc<omsi_script::Program>>,
     /// Further `[LOD]` levels: (min screen size, meshes), in model order after LOD 0.
@@ -196,6 +198,25 @@ pub(super) fn is_white_lightmap(rgba: &[u8]) -> bool {
     !rgba.is_empty() && rgba.chunks_exact(4).all(|p| p[0] >= 242 && p[1] >= 242 && p[2] >= 242)
 }
 
+/// Whether the picture at `path` has no transparent texel at all (no alpha channel, or one
+/// that is 255 throughout), read once per file. A `[matl_alpha] 2` slot that names one has
+/// nothing to blend by, so its fragments are drawn opaque (`World::type_gpu`): the GG2 signs'
+/// pictures (`directions\temp_1.png`, `terminal_east_2.tga`) are like that - an alpha channel
+/// that never goes below 255 - and left a no-write blend, the surface phases drawn after them
+/// ate the signs' blue and the gantries' bare panels.
+pub(super) fn picture_is_opaque(path: &Path) -> bool {
+    static MEMO: std::sync::OnceLock<Mutex<HashMap<PathBuf, bool>>> = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(v) = memo.lock().get(path) {
+        return *v;
+    }
+    let v = omsi_texture::decode_file(path)
+        .map(|i| !i.has_alpha || i.rgba.chunks_exact(4).all(|p| p[3] == 255))
+        .unwrap_or(false);
+    memo.lock().insert(path.to_path_buf(), v);
+    v
+}
+
 /// [`is_white_lightmap`] of the light map `name` (found in `dirs`, read once per file);
 /// `None` when the file is not there.
 pub(super) fn lightmap_is_white(name: &str, dirs: &[&Path]) -> Option<bool> {
@@ -329,6 +350,19 @@ pub struct PageHit {
     pub v: f32,
 }
 
+/// Where a ray lands on a mesh of a scenery object with a `[mouseevent]`: see
+/// [`World::scenery_object_hit`].
+#[derive(Clone, Debug)]
+pub struct SceneryHit {
+    /// Distance (m) along the ray.
+    pub t: f32,
+    pub map_id: i64,
+    #[allow(dead_code)]
+    pub mesh_index: usize,
+    /// The event name from the mesh's `[mouseevent]`.
+    pub event: String,
+}
+
 /// What the timetable tells the scenery: the time of day, and the buses due at the stops
 /// whose departure displays are near (see [`World::timetable_boards`]).
 #[derive(Default)]
@@ -346,7 +380,7 @@ pub struct StopBoards {
     pub wanted_names: Vec<String>,
     /// Per stop name of `wanted_names`: the departures of the next two hours, soonest first,
     /// at most 20, as (line, destination, timestamp).
-    pub departures: std::collections::HashMap<String, Vec<(String, String, f64)>>,
+    pub departures: std::collections::HashMap<String, Vec<omsi_sim::vehicle_api::Departure>>,
     /// Counts up whenever `departures` was made anew.
     pub departures_gen: u64,
 }
@@ -456,6 +490,8 @@ pub struct SplineType {
     pub dir: PathBuf,
     /// The `.surf` map of each of `def.textures` (see [`surf_map`]).
     pub surf: Vec<Option<Arc<omsi_geometry::HeightMap>>>,
+    /// The `[surface]` id of each of them (see [`surface_id`]).
+    pub surface: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -752,6 +788,9 @@ pub struct StagedTile {
     /// The street lanes' points of the tile's splines, kept for good (what an object's box
     /// is checked against: a road through it makes it no wall).
     pub(super) street_points: Vec<DVec3>,
+    /// What sounds along the tile's splines: its road lanes and railway tracks (with their
+    /// speed limit), its overhead wires and tunnels - world points every few metres.
+    pub(super) sound_lines: Vec<(omsi_geometry::LineKind, f32, Vec<DVec3>)>,
     pub(super) objects: Vec<StagedObject>,
     /// The spline attachment rows `[attachObj]` records can hang on: (row id, where its first
     /// object stands, the row's own type - a car park row's, not its car's).
@@ -1047,8 +1086,10 @@ pub(super) struct TreeGpu {
     pub(super) users: usize,
 }
 
-/// Materials every tile shares (never freed).
+/// Materials every tile shares (never freed; made again for another season's textures).
 pub(super) struct GroundGpu {
+    /// The season's texture folder they were made with (`omsi_texture::season_folder`).
+    pub(super) season: Option<String>,
     pub(super) ground_id: Option<TextureId>,
     pub(super) ground_mat: MaterialId,
     pub(super) plain_terrain_mat: MaterialId,

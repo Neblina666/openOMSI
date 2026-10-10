@@ -206,6 +206,9 @@ pub struct PlayerDuty {
     /// The way the bus faces (degrees clockwise from north), from the last update: it says
     /// which of two stops a few metres apart the bus is at (see `StopDir`).
     heading: f64,
+    /// Where the bus was at the last update: how far along the way to the next stop it
+    /// is, for the delay on the way (`delay`).
+    position: Option<glam::DVec3>,
 }
 
 pub const DAY: f64 = 86_400.0;

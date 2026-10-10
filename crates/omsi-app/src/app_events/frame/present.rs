@@ -51,7 +51,15 @@ impl App {
             && self.window.is_some()
         {
             if let Some(shot) = shot {
+                let file = shot.0.to_string_lossy().into_owned();
                 self.frame_shot(shot, lighting);
+                if self.integrations.plugins.as_ref().is_some_and(|p| !p.is_empty()) {
+                    crate::plugins::queue_event(&mut self.integrations.plugin_events, "screenshot", vec![omsi_plugin::InfoValue::Text(file)]);
+                }
+            }
+            // the photo mode's pictures (the window shows the developed photo)
+            if self.photo.is_some() {
+                self.photo_render(lighting);
             }
             let (frame, view, shown_nothing) = self.frame_acquire(&mut reconfigure);
             match view {
@@ -95,15 +103,20 @@ impl App {
         // what an automated window run draws (also when the window is hidden,
         // so it does not depend on a frame being acquired)
         let (path, include_touch) = shot;
-        match r.render_to_image(
+        // the photo mode: its developed photo (stretched to the window) under its panel
+        let developed = self.photo.as_ref().filter(|ph| ph.render.showing_photo()).and_then(|ph| ph.developed()).map(|(w, h, px)| crate::photo::stretch(w, h, px, s.config.width, s.config.height));
+        match developed.map(Ok).unwrap_or_else(|| r.render_to_image(
             scene,
             s.config.width,
             s.config.height,
             cam,
             lighting,
-        ) {
+        )) {
             Ok(mut px) => match {
                 // (with the on-screen controls, when there are)
+                if let Some(over) = self.shell.picture_for_shot(r, s.config.width, s.config.height) {
+                    crate::touch::composite(&mut px, &over);
+                }
                 if include_touch {
                     if let Some(over) = self.input.touch.picture(r, s.config.width, s.config.height) {
                         crate::touch::composite(&mut px, &over);
@@ -152,7 +165,7 @@ impl App {
         let hidden_now = hide_test
             .map(|(a, b)| (a..b).contains(&self.started.elapsed().as_secs_f32()))
             .unwrap_or(false);
-        let acquired = match s.surface.get_current_texture() {
+        let acquired = match s.acquire() {
             wgpu::CurrentSurfaceTexture::Success(_)
             | wgpu::CurrentSurfaceTexture::Suboptimal(_)
             if hidden_now =>
@@ -165,7 +178,7 @@ impl App {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (Some(frame), None),
             wgpu::CurrentSurfaceTexture::Occluded
-            if omsi_cfg::flags::OMSI_RENDER_OCCLUDED.is_set() =>
+            if omsi_cfg::flags::OMSI_RENDER_OCCLUDED.is_set() || omsi_cfg::flags::OMSI_HIDDEN_WINDOW.is_set() =>
                 {
                     let (w, h) = (s.config.width, s.config.height);
                     if self
@@ -211,7 +224,7 @@ impl App {
         let shown_nothing = frame.is_none() && stand_in.is_none();
         let view = frame
             .as_ref()
-            .map(|f| f.texture.create_view(&Default::default()))
+            .map(|f| s.view(&r.device, f))
             .or(stand_in);
         (frame, view, shown_nothing)
     }
@@ -228,7 +241,14 @@ impl App {
     ) {
         #[cfg(not(windows))]
         let _ = vr_nav_display;
-        self.frame_mirrors(raw_dt, lighting);
+        // (the photo mode draws the live picture while its camera moves, the photo once it
+        // stands - as its panel decided when it was drawn this frame: asked again here, after
+        // the photo's pictures were taken, the photo had become ready meanwhile, the scene was
+        // left out and the panel had no photo in it - the window flashed black)
+        let photo = self.photo.is_some() && self.shell.opaque;
+        if !photo {
+            self.frame_mirrors(raw_dt, lighting);
+        }
         let (Some(s), Some(r), Some(scene), Some(cam), Some(win)) = (
             self.gfx.surface.as_ref(),
             self.renderer.as_mut(),
@@ -275,16 +295,9 @@ impl App {
                 }
             }
         }
-        if self.cam.in_cab {
-            if let Some(w) = self.world.as_ref() {
-                self.gfx.mirror_hud.ensure_frame(r, scene);
-                let hud = self
-                    .settings
-                    .hud_viewport((s.config.width, s.config.height));
-                steps::push_mirror_hud(&self.gfx.mirror_hud, scene, w, hud, (self.input.cursor.0 - hud[0], self.input.cursor.1));
-            }
-        }
-        if !mirrored
+        if photo {
+            // (the developed photo covers the window: the screens draw it)
+        } else if !mirrored
             && self.settings.triple.enabled
             && !self.settings.vr_requested()
         {
@@ -312,6 +325,8 @@ impl App {
                 lighting,
             );
         }
+        // the pause menu and the photo mode's panel
+        self.shell.render(r, &view, s.config.width, s.config.height);
         // the on-screen controls over the picture (a phone)
         self.input.touch.render(r, &view, s.config.width, s.config.height);
         *self.perf.profile.entry("render").or_default() += __t.elapsed().as_secs_f64();
@@ -328,7 +343,7 @@ impl App {
                 if self.settings.vsync {
                     win.pre_present_notify();
                 }
-                frame.present();
+                s.present(&r.device, &r.queue, frame);
             }
             None => {
                 let _ = omsi_render::wait_gpu(&r.device, None);
@@ -521,18 +536,24 @@ impl App {
         let mut finish = false;
         self.perf.frames += 1;
         let profiling = omsi_cfg::flags::OMSI_PROFILE.is_set();
+        // (the warm-up: 15 s of play, not of the process - a big map's loading took most of
+        // 15 s, and the summary then held the first heavy frames of play; marked whether or not
+        // the CPU time can be read)
+        let playing = *self.perf.play_started.get_or_insert_with(Instant::now);
         if profiling
-            && self.perf.cpu_mark.is_none()
-            && self.started.elapsed().as_secs_f32() > 15.0
+            && self.perf.profile_mark.is_none()
+            && playing.elapsed().as_secs_f32() > 15.0
         {
             self.perf.cpu_mark =
                 process_cpu_seconds().map(|c| (c, Instant::now(), self.perf.total_frames));
+            self.perf.thread_cpu_mark = crate::startup::thread_cpu_seconds();
+            self.perf.instructions_mark = crate::startup::process_instructions();
             self.perf.profile_mark = Some(crate::perf_report::ProfileMark::take(&self.perf.profile, r));
         }
         if let (Some(limit), false) = (self.args.exit_after, self.exiting) {
             if self.started.elapsed().as_secs_f32() > limit {
                 self.exiting = true;
-                log::info!("exit after {limit} s: {} frames total ({} with the window hidden{}), {:.1} fps average, {} frames over 50 ms, worst {:.0} ms", self.perf.total_frames, self.gfx.hidden_frames, if omsi_cfg::flags::OMSI_RENDER_OCCLUDED.is_set() { ", drawn off-screen" } else { ", not drawn" }, self.perf.total_frames as f32 / self.started.elapsed().as_secs_f32(), self.perf.spikes, self.perf.worst_ms);
+                log::info!("exit after {limit} s: {} frames total ({} with the window hidden{}), {:.1} fps average, {} frames over 50 ms, worst {:.0} ms", self.perf.total_frames, self.gfx.hidden_frames, if omsi_cfg::flags::OMSI_RENDER_OCCLUDED.is_set() || omsi_cfg::flags::OMSI_HIDDEN_WINDOW.is_set() { ", drawn off-screen" } else { ", not drawn" }, self.perf.total_frames as f32 / self.started.elapsed().as_secs_f32(), self.perf.spikes, self.perf.worst_ms);
                 if let (Some(st), Some(w)) =
                     (self.gfx.streamer.as_ref(), self.world.as_ref())
                 {
@@ -567,7 +588,8 @@ impl App {
                         (self.perf.cpu_mark, process_cpu_seconds())
                     {
                         let frames = self.perf.total_frames.saturating_sub(f0).max(1) as f64;
-                        log::info!("profile: since 15 s {:.1} ms wall and {:.1} ms CPU (all threads) per frame, {:.1} cores busy", t0.elapsed().as_secs_f64() / frames * 1000.0, (c1 - c0) / frames * 1000.0, (c1 - c0) / t0.elapsed().as_secs_f64().max(1e-3));
+                        let main = self.perf.thread_cpu_mark.zip(crate::startup::thread_cpu_seconds()).map(|(m0, m1)| format!(", {:.2} ms CPU of the frame's own thread", (m1 - m0) / frames * 1000.0)).unwrap_or_default();
+                        log::info!("profile: since 15 s {:.1} ms wall and {:.1} ms CPU (all threads) per frame{main}, {:.1} cores busy", t0.elapsed().as_secs_f64() / frames * 1000.0, (c1 - c0) / frames * 1000.0, (c1 - c0) / t0.elapsed().as_secs_f64().max(1e-3));
                     }
                     let (sw, sh) = r.scene_size(s.config.width, s.config.height);
                     log::info!(

@@ -53,6 +53,11 @@ impl App {
     /// the view in the bus), or with OMSI's `[altView]` turns the view; the middle button
     /// turns it in any case. Where there is nothing to zoom it turns the view.
     pub(crate) fn on_right(&mut self, pressed: bool) {
+        if let Some(ph) = self.photo.as_mut() {
+            ph.looking = pressed;
+            self.sync_look_hold();
+            return;
+        }
         self.input.buttons_held.1 = pressed;
         // the left button already down on nothing it works: both held zoom
         if pressed && self.input.buttons_held.0 && !self.input.dragging && self.start_both_drag() {
@@ -75,23 +80,59 @@ impl App {
             self.service_msg = Some(("Mouse steering off".into(), 3.0));
         }
         if pressed && self.right_zooms() && self.start_both_drag() {
+            self.sync_look_hold();
             return;
         }
-        if self.input.mouse_drive && self.menus.game_menu.is_none() {
+        // The wheel and the pedals keep their own point, `mouse_grab.at`, while the view turns.
+        // Where the cursor is held while the mouse steers (the steering cross shows the point)
+        // it is not put back where the look began - that was the cursor's jump as the button
+        // came up - its movement only counts afresh from where it is. Where the free cursor
+        // itself shows the point (`mouse_hold` off) it goes back there, so the two agree.
+        if self.input.mouse_drive && self.menus.game_menu.is_none() && self.input.look_lock.is_none() {
             if pressed {
                 self.input.steer_cursor = Some(self.input.cursor);
             } else if let Some((x, y)) = self.input.steer_cursor.take() {
-                self.input.cursor = (x, y);
-                if let Some(win) = self.window.as_ref() {
-                    let _ = win.set_cursor_position(winit::dpi::PhysicalPosition::new(x as f64, y as f64));
+                if self.settings.mouse_hold {
+                    self.input.mouse_grab.pause();
+                } else {
+                    self.input.cursor = (x, y);
+                    if let Some(win) = self.window.as_ref() {
+                        let _ = win.set_cursor_position(winit::dpi::PhysicalPosition::new(x as f64, y as f64));
+                    }
                 }
             }
         }
         self.input.mouse_look = pressed;
-        // (looking round goes by the cursor: it is let go at once, and held again after)
+        // (looking round locks the cursor where it stands, or lets the steering's hold go
+        // where it cannot, and holds it again after)
+        self.sync_look_hold();
         self.sync_mouse_grab();
         // (the cursor shows it at once, not with the next look at what is under it)
         self.update_hover();
+    }
+
+    /// The mouse's own movement (dx, dy) while looking round with the cursor locked
+    /// (`sync_look_hold`): in logical pixels (points on macOS), at the cursor's rate - the
+    /// field of view over 78.75 per pixel, as Omsi.exe turns the view by the cursor's way.
+    /// False when the look does not go by it (the raw look of the free camera and on foot).
+    pub(crate) fn look_raw(&mut self, dx: f32, dy: f32) -> bool {
+        if self.input.look_lock.is_none() {
+            return false;
+        }
+        if let Some(ph) = self.photo.as_mut() {
+            if ph.looking {
+                let k = look_deg_per_px(ph.cam.fov_deg) * self.settings.look_sens;
+                ph.look(dx * k, dy * k);
+            }
+            return true;
+        }
+        if !self.cursor_looks() {
+            return false;
+        }
+        let fov = self.camera.as_ref().map(|c| c.fov_deg).unwrap_or(60.0);
+        let k = look_deg_per_px(fov) * self.settings.look_sens;
+        self.look_by(dx * k, dy * k);
+        true
     }
 
     pub(crate) fn on_mouse_moved(&mut self, x: f32, y: f32) {
@@ -103,6 +144,11 @@ impl App {
     /// The cursor's new place in the window, as the window reported it or as the mouse
     /// steering's point stands in it.
     pub(super) fn cursor_moved_to(&mut self, x: f32, y: f32) {
+        // a plugin's slider or panel being dragged follows the cursor
+        if self.plugin_drag_move(x, y) {
+            self.input.cursor = (x, y);
+            return;
+        }
         // a mirror panel being dragged follows the cursor (nothing else of the cursor's
         // work is done meanwhile, and outside a drag none of it is touched)
         if self.gfx.mirror_hud.dragging() {
@@ -202,6 +248,17 @@ impl App {
     /// editor's drag, the city map) and no switch is to be named.
     fn move_cursor(&mut self, x: f32, y: f32) -> bool {
         let last = self.input.cursor;
+        self.shell.pointer(x, y);
+        // the photo camera turned by a drag (and nothing else of the game's under the mouse)
+        if let Some(ph) = self.photo.as_mut() {
+            self.input.cursor = (x, y);
+            if ph.looking && self.input.look_lock.is_none() {
+                let scale = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0).max(0.1);
+                let k = look_deg_per_px(ph.cam.fov_deg) * self.settings.look_sens;
+                ph.look((x - last.0) / scale * k, (y - last.1) / scale * k);
+            }
+            return false;
+        }
         self.input.cursor = (x, y);
         // the navigator held by the mouse follows it
         if let Some(n) = self.menus.navigator.as_mut() {
@@ -313,7 +370,7 @@ impl App {
         // (0x82c5f8: yaw and pitch at the press plus the cursor's way times fov / 78.75):
         // raw device deltas are no window pixels (a tablet, a remote desktop or a VM
         // reports positions there and spun the view) and did not follow the zoom
-        if self.cursor_looks() {
+        if self.cursor_looks() && self.input.look_lock.is_none() {
             let scale = self.window.as_ref().map(|w| w.scale_factor() as f32).unwrap_or(1.0).max(0.1);
             let fov = self.camera.as_ref().map(|c| c.fov_deg).unwrap_or(60.0);
             let k = look_deg_per_px(fov) * self.settings.look_sens;
@@ -424,6 +481,9 @@ impl App {
         if self.html_object_click(pressed) {
             return;
         }
+        if self.scenery_object_click_event(pressed) {
+            return;
+        }
         // on foot: the own bus's switches, doors and flaps from inside it or standing by it
         if self.view == "foot" && !self.foot_reaches_bus() {
             return;
@@ -522,8 +582,44 @@ impl App {
         true
     }
 
+    /// A left click (or let go) over a scenery object carrying a `[mouseevent]`.
+    fn scenery_object_click_event(&mut self, pressed: bool) -> bool {
+        let Some(w) = self.world.as_ref() else { return false };
+        if !pressed {
+            if let Some((map_id, ev)) = self.input.pressed_scenery_object.take() {
+                w.scenery_object_release(map_id, &ev);
+                self.input.dragging = false;
+                return true;
+            }
+            return false;
+        }
+        let Some((o, d, spread)) = self.cursor_ray_now() else { return false };
+        let veh_has_control = if self.view == "foot" && !self.foot_reaches_bus() {
+            false
+        } else {
+            self.player.as_ref().is_some_and(|p| {
+                p.pick(o, d, spread).is_some() || p.pick_trailer(o, d, spread).is_some()
+            })
+        };
+        if veh_has_control {
+            return false;
+        }
+        let Some(hit) = w.scenery_object_hit(o, d, crate::input_script::SCENERY_OBJECT_REACH, spread) else { return false };
+        if self.player.as_ref().and_then(|p| p.opaque_body_hit(o, d)).is_some_and(|t| t < hit.t) {
+            return false;
+        }
+        if let Some(p) = self.player.as_mut() {
+            p.release();
+        }
+        self.input.drag_delta = (0.0, 0.0);
+        w.scenery_object_click(hit.map_id, &hit.event);
+        self.input.pressed_scenery_object = Some((hit.map_id, hit.event));
+        self.input.dragging = true;
+        true
+    }
+
     /// The ray under the cursor now (see [`Self::cockpit_cursor_ray`]).
-    fn cursor_ray_now(&self) -> Option<(glam::DVec3, glam::Vec3, f32)> {
+    pub(crate) fn cursor_ray_now(&self) -> Option<(glam::DVec3, glam::Vec3, f32)> {
         let (cam, s) = self.camera.as_ref().zip(self.gfx.surface.as_ref())?;
         Some(self.cockpit_cursor_ray(cam, (s.config.width, s.config.height)))
     }
@@ -543,7 +639,11 @@ impl App {
             return;
         }
         let (dx, dy) = std::mem::take(&mut self.input.drag_delta);
-        if let Some(p) = self.player.as_mut() {
+        if let Some((map_id, ref ev)) = self.input.pressed_scenery_object {
+            if let Some(w) = self.world.as_ref() {
+                w.scenery_object_drag(map_id, ev, dx, dy);
+            }
+        } else if let Some(p) = self.player.as_mut() {
             p.drag(dx, dy);
         }
     }

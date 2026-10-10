@@ -563,6 +563,7 @@ impl World {
             drive: Vec::new(),
             lanes: Mutex::new(Vec::new()),
             street_points: Vec::new(),
+            sound_lines: Vec::new(),
             objects: Vec::new(),
             anchors: Vec::new(),
             counts: LoadStats::default(),
@@ -596,6 +597,16 @@ impl World {
                 (0..=n).map(move |k| l.at(l.length() * k as f32 / n as f32).0)
             })
             .collect();
+        // (every 10 m along the lanes and tracks, for the ambience)
+        out.sound_lines.extend(lanes.iter().filter(|l| !l.invisible || l.kind == LaneKind::Street).filter_map(|l| {
+            let kind = match l.kind {
+                LaneKind::Street => omsi_geometry::LineKind::Road,
+                LaneKind::Rail => omsi_geometry::LineKind::Rail,
+                _ => return None,
+            };
+            let n = (l.length() / SOUND_LINE_STEP).ceil().max(1.0) as usize;
+            Some((kind, l.speed_limit_kmh, (0..=n).map(|k| l.at(l.length() * k as f32 / n as f32).0).collect()))
+        }));
         *out.lanes.lock() = lanes;
         *out.meshes.lock() = Some(meshes);
         let rows = self.stage_objects(&mut out, &tile, origin2, index, &counts);
@@ -632,6 +643,19 @@ impl World {
                 l.invisible = st.def.only_editor;
             }
             lanes.extend(new_lanes);
+            // wires strung overhead (every profile hangs clear of the line, no path on it) and
+            // tunnels sound along their length
+            let line = if !st.def.only_editor && st.def.paths.is_empty() && overhead_only(&st.def) {
+                Some(omsi_geometry::LineKind::Wire)
+            } else if s.file.to_ascii_lowercase().contains("tunnel") {
+                Some(omsi_geometry::LineKind::Tunnel)
+            } else {
+                None
+            };
+            if let Some(kind) = line {
+                let n = (curve.length / SOUND_LINE_STEP as f64).ceil().max(1.0) as usize;
+                out.sound_lines.push((kind, 0.0, (0..=n).map(|k| curve.point_at(curve.length * k as f64 / n as f64)).collect()));
+            }
             if st.def.only_editor {
                 if debug_splines {
                     log::info!("tile {tx},{ty} spline {} {} is editor-only (lanes only, no mesh) at ({:.1},{:.1},{:.2})", s.id, s.file, s.pos[0], s.pos[1], s.pos[2]);
@@ -730,7 +754,7 @@ impl World {
                 };
                 // (every spline the game draws: Omsi.exe asks them all, roads or not)
                 if !heightprofile_ground() {
-                    out.drive.push((shape.clone(), bounds, omsi_geometry::SurfFaces::of(&mesh, &st.surf)));
+                    out.drive.push((shape.clone(), bounds, omsi_geometry::SurfFaces::tagged(&mesh, &st.surf, &st.surface)));
                 }
                 let drivable = st.def.paths.iter().any(|pd| pd.kind == 0 || pd.kind == 1);
                 let overlay = !st.def.profiles.is_empty()
@@ -1209,3 +1233,6 @@ impl World {
 /// OMSI_CHECK_SPLINES: every spline's two ends, its neighbours in the chain and its file.
 /// (Global: `offscreen` reads it to report chained ends that differ in height.)
 pub(crate) static SPLINE_ENDS: std::sync::LazyLock<Mutex<HashMap<i64, (DVec3, DVec3, i64, i64, String)>>> = std::sync::LazyLock::new(Default::default);
+
+/// Metres between the points the ambience keeps along a lane, a track, a wire or a tunnel.
+const SOUND_LINE_STEP: f32 = 10.0;

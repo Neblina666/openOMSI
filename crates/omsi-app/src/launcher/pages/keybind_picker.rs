@@ -342,7 +342,7 @@ pub fn keybind_picker(l: &mut Launcher) {
     // what to look for: the action (its name or what it does), and the bus that uses it
     let filter_w = (inner.w - 12.0) * 0.5;
     let mut query = std::mem::take(&mut l.pages.kb_picker_filter);
-    let query_changed = l.ui.text_input("kb-picker-search", Rect::new(inner.x, inner.y + 54.0, filter_w, 36.0), &mut query, "Search actions…", Some("search"));
+    let query_changed = l.ui.text_input("kb-picker-search", Rect::new(inner.x, inner.y + 54.0, filter_w, 36.0), &mut query, "Search actions...", Some("search"));
     l.pages.kb_picker_filter = query.clone();
     let mut source_query = std::mem::take(&mut l.pages.kb_picker_source_filter);
     let source_r = Rect::new(inner.x + filter_w + 12.0, inner.y + 54.0, filter_w, 36.0);
@@ -428,13 +428,13 @@ fn source_suggestion_list(l: &mut Launcher, source_query: &str, at: Rect) -> (f3
 fn scan_progress(l: &mut Launcher, results: usize, r: Rect) {
     let (done, total, current) = &l.pages.kb_script_scan;
     let status = if l.pages.kb_script_scan_complete {
-        format!("{results} results · scanned {total} vehicle files")
+        format!("{results} results | scanned {total} vehicle files")
     } else if *total > 0 {
-        format!("{results} results · scanning {done} / {total} · {current}")
+        format!("{results} results | scanning {done} / {total} | {current}")
     } else if l.pages.kb_script_actions.is_some() {
-        format!("{results} results · checking installed bus scripts…")
+        format!("{results} results | checking installed bus scripts...")
     } else {
-        format!("{results} results · finding installed bus scripts…")
+        format!("{results} results | finding installed bus scripts...")
     };
     let progress = if *total == 0 { 0.0 } else { *done as f32 / *total as f32 };
     l.ui.text_in(&status, Rect::new(r.x, r.y, r.w, 18.0), 11.5, Weight::Regular, TEXT_DIM, Align::Left);
