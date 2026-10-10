@@ -14,11 +14,7 @@
 //! wrists sharply), and turn with it, the wheel's angle read from its own animation
 //! variable. Turned out of its reach a hand lets go and takes the rim again further back
 //! while the other holds on, as drivers shuffle a bus's wheel through their hands; held
-//! still, the wheel gets the hands back at their rest.
-//!
-//! On a manual bus the shifting hand stays on the knob for at least three seconds after a
-//! shift before returning to the wheel. While the bus is stopped, one hand rests on the
-//! knob and the other stays on the wheel. (Before, the hands stopped at the
+//! still, the wheel gets the hands back at their rest. (Before, the hands stopped at the
 //! end of a small range and the rim slid on through them: the wheel seemed to turn by
 //! itself under hands frozen in the air.)
 //!
@@ -29,10 +25,9 @@
 //! one on the lever's side of the seat, so left- and right-hand-drive buses alike get the
 //! right one. When the lever moves (or the clutch goes down) that hand lets go of the rim,
 //! reaches over, rides the knob through the shift (a short push of its own when the model's
-//! lever does not move) and keeps the knob in hand after the shift before returning to the rim,
-//! the other hand keeping the wheel meanwhile. With the bus stopped the hand waits on the
-//! knob and the other one holds the wheel; once moving, it returns to the wheel after the
-//! post-shift hold.
+//! lever does not move) and goes back to the rim, the other hand keeping the wheel meanwhile.
+//! With the bus stopped the hand waits on the knob and the other one holds the wheel; it goes
+//! back to the rim when the bus moves off, or when the wheel is turned too far for one hand.
 //! A bus with no lever (an automatic's selector is buttons, too small to be taken for one) gets
 //! both hands on the wheel, always; `OMSI_DRIVER_SHIFTER=off` does that for any bus.
 //!
@@ -50,14 +45,14 @@ use omsi_sim::VehicleInstance;
 use std::sync::Arc;
 
 /// Where the hands rest on the rim, from the top, clockwise seen by the driver (degrees):
-/// a little above the sides, ten to two as bus drivers hold a flat wheel.
-const REST: [f32; 2] = [-70.0, 70.0];
+/// slightly lower on the sides, roughly nine and three o'clock.
+const REST: [f32; 2] = [-80.0, 80.0];
 /// Where each hand can hold the rim (degrees from the top): the hands turn with the wheel
 /// within it; a hand turned out of it lets go and takes the rim again further back (the
 /// other hand holding on meanwhile), as a driver shuffles the wheel through his hands. (The
 /// figure used to keep its hands still and let the rim slide through them past a small
 /// range: the wheel seemed to turn by itself under hands frozen in the air.)
-const RANGE: [(f32, f32); 2] = [(-150.0, -20.0), (20.0, 150.0)];
+const RANGE: [(f32, f32); 2] = [(-155.0, -35.0), (35.0, 155.0)];
 /// A hand lets go this far (degrees) past its range at most before the rim slides.
 const SLIP: f32 = 25.0;
 /// How far a fist rolls round the rim (degrees, see `hand_targets`) and the time constant
@@ -113,8 +108,8 @@ const REACH_TIME: f32 = 0.22;
 /// ... and when a gear is being engaged: the hand is on its way the moment the lever moves.
 const REACH_FAST: f32 = 0.12;
 const BACK_TIME: f32 = 0.25;
-/// Once the hand reaches the knob, it stays there at least this long (s) after a shift.
-const HOLD_AFTER: f32 = 3.0;
+/// The hand stays on the knob this long (s) after the lever (or the clutch) last moved.
+const HOLD_AFTER: f32 = 0.08;
 /// Length (s) and reach (m) of the push the hand makes when the model's lever does not move
 /// by itself, and the travel (m) of the lever from which that push fades out.
 const STROKE_TIME: f32 = 0.45;
@@ -174,14 +169,16 @@ struct ShiftState {
     /// The bus has stood still long enough (hysteresis on its speed).
     stopped: bool,
     still_for: f32,
+    /// Time (s) the stopped bus's hand stays off the lever after the wheel was turned too
+    /// far for one hand.
+    cool: f32,
     last_pos: Option<glam::DVec3>,
     last_knob: Option<Vec3>,
     last_vars: Vec<f32>,
     last_clutch: f32,
     was_active: bool,
-    /// Seconds still to hold the gear lever after the last shift event; counted only while
-    /// the hand is physically on the knob.
-    hold_remaining: f32,
+    /// Time (s) since the lever or the clutch last moved.
+    idle: f32,
     /// A shift is under way and the hand has not started for the lever yet.
     pending: bool,
     waiting: f32,
@@ -200,12 +197,13 @@ impl Default for ShiftState {
             reach: REACH_TIME,
             stopped: false,
             still_for: 0.0,
+            cool: 0.0,
             last_pos: None,
             last_knob: None,
             last_vars: Vec::new(),
             last_clutch: 0.0,
             was_active: false,
-            hold_remaining: 0.0,
+            idle: 10.0,
             pending: false,
             waiting: 0.0,
             stroke: 1.0,
@@ -295,11 +293,8 @@ pub struct DriverFigure {
     /// scratch copy of a mesh with a hand opening.
     hand_of: Vec<Vec<i8>>,
     /// Per mesh and vertex, the arm (upper arm and forearm) it belongs to (0 left, 1 right,
-    /// -1 none); used to fold hidden upper-arm vertices toward the elbow.
+    /// -1 none): the arms stay in the cab view along with the hands.
     arm_of: Vec<Vec<i8>>,
-    /// Per mesh and vertex, the forearm it belongs to. The first-person view keeps these
-    /// vertices and the hands, while folding the shoulder and upper arm out of the view.
-    forearm_of: Vec<Vec<i8>>,
     blend: (Vec<Vec3>, Vec<Vec3>),
     /// The gear lever, when the bus's model has one near the seat, and what the hand
     /// working it is doing.
@@ -311,9 +306,6 @@ pub struct DriverFigure {
 /// numbered as in `omsi_sim::human` (thighs 0-1, shins 2-3, upper arms 4-5, forearms 6-7).
 const UPPER_ARM_SLOT: [usize; 2] = [4, 5];
 const FORE_ARM_SLOT: [usize; 2] = [6, 7];
-/// Upper-arm sleeve kept above the elbow in first-person view, to leave a smooth transition
-/// into the forearm while keeping the shoulder out of frame.
-const CAB_ELBOW_BLEND: f32 = 0.10;
 
 /// A hand on the rim: the point it holds, as an angle on the wheel (the angle seen from the
 /// seat less the wheel's), or its way to a new hold.
@@ -323,21 +315,25 @@ struct Hand {
     mv: Option<Regrip>,
 }
 
-/// A hand changing its hold: from and to angles relative to the wheel (degrees), progress
-/// 0..1 and duration (s).
+/// A hand let go of the rim and moving to hold it again: from and to angles seen from the
+/// seat (degrees), progress 0..1 and duration (s).
 #[derive(Clone, Copy)]
 struct Regrip {
     from: f32,
     to: f32,
     t: f32,
     dur: f32,
+    /// How fast the hand moves along the rim as it lets go and as it takes hold (degrees
+    /// over the whole move): it leaves the rim moving with it and meets it the same way,
+    /// not stopping dead in one frame.
+    v0: f32,
+    v1: f32,
 }
 
 impl Regrip {
-    fn new(from: f32, to: f32, dur: f32) -> Regrip {
-        // Use the shortest path around the rim; angles may already include several wheel turns.
-        let to = from + wrap(to - from);
-        Regrip { from, to, t: 0.0, dur }
+    fn new(from: f32, to: f32, dur: f32, rate: f32) -> Regrip {
+        let v = (rate * dur).clamp(-60.0, 60.0);
+        Regrip { from, to, t: 0.0, dur, v0: v, v1: v }
     }
 }
 
@@ -347,11 +343,11 @@ impl Hand {
     fn seen(&self, theta: f32) -> (f32, f32) {
         match self.mv {
             Some(m) => {
-                // Move between rim-relative holds; adding theta at every frame keeps the
-                // moving hand attached to the rotating wheel through the entire regrip.
+                // a Hermite curve: from and to, leaving and arriving with the rim's speed
                 let t = m.t.clamp(0.0, 1.0);
-                let rim_angle = m.from + (m.to - m.from) * smooth(t);
-                (rim_angle + theta, (t * std::f32::consts::PI).sin().powi(2))
+                let (t2, t3) = (t * t, t * t * t);
+                let a = m.from * (2.0 * t3 - 3.0 * t2 + 1.0) + m.v0 * (t3 - 2.0 * t2 + t) + m.to * (3.0 * t2 - 2.0 * t3) + m.v1 * (t3 - t2);
+                (a, (t * std::f32::consts::PI).sin().powi(2))
             }
             None => (self.on_rim + theta, 0.0),
         }
@@ -488,31 +484,6 @@ impl DriverFigure {
                     .collect()
             })
             .collect();
-        // A vertex may be blended between the upper arm and forearm at the elbow. Keep a
-        // little of that transition in the cab view so the sleeve does not end in a hard
-        // seam as the driver turns the wheel; shoulder-weighted vertices remain hidden.
-        let forearm_of: Vec<Vec<i8>> = ty
-            .meshes
-            .iter()
-            .map(|m| {
-                m.skin
-                    .iter()
-                    .map(|inf| {
-                        (0..2)
-                            .filter_map(|side| {
-                                let w: f32 = (0..inf.n.max(1) as usize)
-                                    .filter(|&j| inf.slot[j] as usize == FORE_ARM_SLOT[side])
-                                    .map(|j| if inf.n <= 1 { 1.0 } else { inf.weight[j] })
-                                    .sum();
-                                (w > 0.24).then_some((side, w))
-                            })
-                            .max_by(|a, b| a.1.total_cmp(&b.1))
-                            .map(|(side, _)| side as i8)
-                            .unwrap_or(-1)
-                    })
-                    .collect()
-            })
-            .collect();
         let grip_rest = grip_centres(&ty, GRIP_RADIUS);
         let mut f = DriverFigure {
             ty,
@@ -547,7 +518,6 @@ impl DriverFigure {
             rolls: [None; 2],
             hand_of,
             arm_of,
-            forearm_of,
             blend: Default::default(),
             shifter: None,
             shift: ShiftState::default(),
@@ -797,30 +767,81 @@ impl DriverFigure {
                 skin_from(m, &self.curled[k], &posed.bones, pos, nrm);
             }
 
-            // In the cab view, keep the hands and forearms but fold the torso and upper arms
-            // onto the hip/elbows. The shoulders used to remain in the camera view; their
-            // apparent size changed sharply with the driver's FoV and seat position. This
-            // mask is attached to the figure, not the camera, so those settings cannot bring
-            // the shoulder geometry back into view. The complete figure remains in mirrors.
+            // In the cab view only the hands show: every other vertex is folded onto the
+            // nearer wrist (the middle of that hand's vertices), so that the body's triangles
+            // shrink to nothing and those joining a hand close it at the wrist. (Folded onto
+            // the figure's origin, the triangles from the wrists stretched to the seat.)
+            // The forearms and hands stay visible; the upper arms and rest of the figure are
+            // folded onto the forearms (or the hands when a mesh has no forearm vertices).
             if mirror_only && self.show_hands_in_cab {
-                let (hand_of, arm_of, forearm_of) = (&self.hand_of[k], &self.arm_of[k], &self.forearm_of[k]);
-                let count = pos.len().min(hand_of.len()).min(arm_of.len()).min(forearm_of.len());
+                let (hand_of, arm_of) = (&self.hand_of[k], &self.arm_of[k]);
+                let count = pos.len().min(hand_of.len()).min(arm_of.len());
+                let forearm_w = |i: usize, side: usize| -> f32 {
+                    let inf = &m.skin[i];
+                    (0..inf.n.max(1) as usize)
+                        .filter(|&j| inf.slot[j] as usize == FORE_ARM_SLOT[side])
+                        .map(|j| if inf.n <= 1 { 1.0 } else { inf.weight[j] })
+                        .sum()
+                };
+                // In the cab view keep the forearms and hands, but fold the upper arms
+                // and body away. This keeps the shoulders behind the camera regardless
+                // of the seat position or field of view. Lower the forearms slightly at
+                // the elbow, tapering the offset to zero at the wrist so the hands stay
+                // joined to the wheel.
                 for i in 0..count {
-                    if hand_of[i] >= 0 || forearm_of[i] >= 0 {
+                    if hand_of[i] >= 0 {
                         continue;
                     }
-                    let side = arm_of[i];
-                    if side >= 0
-                        && pos[i].distance_squared(posed.elbow[side as usize])
-                            <= CAB_ELBOW_BLEND * CAB_ELBOW_BLEND
-                    {
-                        continue;
+                    for side in 0..2 {
+                        if forearm_w(i, side) <= 0.5 || arm_of[i] != side as i8 {
+                            continue;
+                        }
+                        let arm = posed.wrist[side] - posed.elbow[side];
+                        let len2 = arm.length_squared();
+                        if len2 > 1e-5 {
+                            let t = ((pos[i] - posed.elbow[side]).dot(arm) / len2).clamp(0.0, 1.0);
+                            pos[i].z -= 0.045 * (1.0 - t);
+                        }
                     }
-                    pos[i] = if side >= 0 {
-                        posed.elbow[side as usize]
-                    } else {
-                        (posed.hip[0] + posed.hip[1]) * 0.5
-                    };
+                }
+                let mut fore_sum = [Vec3::ZERO; 2];
+                let mut fore_n = [0.0f32; 2];
+                let mut hd_sum = [Vec3::ZERO; 2];
+                let mut hd_n = [0.0f32; 2];
+                for i in 0..count {
+                    for side in 0..2 {
+                        if arm_of[i] == side as i8 && forearm_w(i, side) > 0.5 {
+                            fore_sum[side] += pos[i];
+                            fore_n[side] += 1.0;
+                        }
+                        if hand_of[i] == side as i8 {
+                            hd_sum[side] += pos[i];
+                            hd_n[side] += 1.0;
+                        }
+                    }
+                }
+                let anchors: Vec<Vec3> = (0..2)
+                    .filter_map(|h| {
+                        if fore_n[h] > 0.0 {
+                            Some(fore_sum[h] / fore_n[h])
+                        } else if hd_n[h] > 0.0 {
+                            Some(hd_sum[h] / hd_n[h])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let fold = anchors.first().copied().or_else(|| pos.first().copied()).unwrap_or(Vec3::ZERO);
+                for i in 0..count {
+                    let forearm = (0..2).any(|side| arm_of[i] == side as i8 && forearm_w(i, side) > 0.5);
+                    if hand_of[i] < 0 && !forearm {
+                        let here = pos[i];
+                        pos[i] = anchors
+                            .iter()
+                            .copied()
+                            .min_by(|a, b| a.distance_squared(here).total_cmp(&b.distance_squared(here)))
+                            .unwrap_or(fold);
+                    }
                 }
             }
 
@@ -913,7 +934,7 @@ impl DriverFigure {
             if let Some(m) = &mut self.hands[k].mv {
                 m.t = (m.t + dt / m.dur).clamp(0.0, 1.0);
                 if m.t >= 1.0 {
-                    self.hands[k] = Hand { on_rim: m.to, mv: None };
+                    self.hands[k] = Hand { on_rim: m.to - theta, mv: None };
                 }
             }
         }
@@ -949,8 +970,7 @@ impl DriverFigure {
             // With the other hand at the gear lever this one is the wheel's only: it pushes
             // the wheel round as far as it goes and only then takes it again further back.
             let lone = away[1 - k];
-            // While the other hand is on the lever, this hand can steer alone; it only
-            // takes a new grip when it actually runs out of reach.
+            // Always keep both hands on wheel unless shifting (rare and brief)
             let can_regrip = self.hands[1 - k].mv.is_none() && !freeze && (!lone || a > hi + ONE_HAND_OVER || a < lo - ONE_HAND_OVER);
             // (the other hand keeps hold meanwhile, sliding if it has to)
             if can_regrip {
@@ -962,15 +982,16 @@ impl DriverFigure {
                 } else {
                     ahead > hi
                 };
-                let target_seen = if up { lo + REGRIP_BACK } else { hi - REGRIP_BACK };
-                let target_seen = if (target_seen - REST[k]).abs() > 90.0 { REST[k] } else { target_seen };
-                // A new hold is a point on the wheel, so store it in the rim's frame. It
-                // keeps following the animated rim while the hand lifts and changes grip.
-                let from = self.hands[k].on_rim;
-                let to = from + wrap(target_seen - theta - from);
+                let to = if up { lo + REGRIP_BACK } else { hi - REGRIP_BACK };
+                let to = if (to - REST[k]).abs() > 90.0 { REST[k] } else { to };
+                // (from where the hand is now: a hand that slid is already past the range)
+                let from = a;
+                // an unhurried reach back, only a little quicker the faster the wheel turns
+                // (at a tenth of a second a hand flew back to its hold); a lone hand is
+                // quicker, the wheel has none else
                 let dur = (0.38 + (to - from).abs() / 350.0) / (1.0 + self.rate.abs() / 2000.0);
                 let dur = dur.max(0.32);
-                self.hands[k] = Hand { on_rim: self.hands[k].on_rim, mv: Some(Regrip::new(from, to, dur)) };
+                self.hands[k] = Hand { on_rim: self.hands[k].on_rim, mv: Some(Regrip::new(from, to, dur, self.rate)) };
             } else {
                 // the rim slides through the hand past its range: the hand goes on with it
                 // less and less over SLIP degrees (stopped dead at a limit, it jumped)
@@ -987,9 +1008,8 @@ impl DriverFigure {
             let far = |k: usize| (self.hands[k].on_rim + theta - REST[k]).abs();
             let k = if far(0) >= far(1) { 0 } else { 1 };
             if far(k) > 22.0 {
-                let from = self.hands[k].on_rim;
-                let to = REST[k] - theta;
-                self.hands[k].mv = Some(Regrip::new(from, to, 0.45 + (to - from).abs() / 300.0));
+                let from = self.hands[k].on_rim + theta;
+                self.hands[k].mv = Some(Regrip::new(from, REST[k], 0.45 + (REST[k] - from).abs() / 300.0, 0.0));
                 self.still = 0.0;
             }
         }
@@ -1197,7 +1217,12 @@ impl DriverFigure {
         let vars: Vec<f32> = sh.vars.iter().map(|n| v.var(n).unwrap_or(0.0)).collect();
         let clutch = sh.clutch.as_ref().and_then(|n| v.var(n)).unwrap_or(0.0);
 
+        // The hand left on the rim: is the wheel being turned too much for one hand?
         let other = 1 - hand;
+        let a = self.hands[other].on_rim + self.theta;
+        let out = (RANGE[other].0 - a).max(a - RANGE[other].1);
+        let busy = self.rate.abs() > 70.0 || out > 5.0;
+        let calm = self.rate.abs() < 60.0 && out <= 0.0;
         let hands_free = self.hands[0].mv.is_none() && self.hands[1].mv.is_none();
         // A gear being engaged comes before the wheel: the hand that is to work the lever
         // drops whatever it was doing, only the hand that stays on the rim must not be in
@@ -1218,24 +1243,23 @@ impl DriverFigure {
         if st.still_for > STOP_AFTER {
             st.stopped = true;
         }
+        st.cool = (st.cool - dt).max(0.0);
+
         // A gear is being engaged: the knob moves, a watched variable changes.
         let knob_speed = st.last_knob.map(|k| (knob - k).length() / dt).unwrap_or(0.0);
         st.last_knob = Some(knob);
         let var_moved = st.last_vars.len() == vars.len() && st.last_vars.iter().zip(&vars).any(|(a, b)| (a - b).abs() > 1e-3);
         st.last_vars = vars;
         let clutch_edge = clutch > 0.5 && st.last_clutch <= 0.5;
-        let clutch_release = clutch <= 0.5 && st.last_clutch > 0.5;
         st.last_clutch = clutch;
         let active = knob_speed > LEVER_MOVING || var_moved;
-        let shift_event = active || clutch_edge || clutch_release;
-        if shift_event {
-            st.hold_remaining = HOLD_AFTER;
+        if active || clutch_edge {
+            st.idle = 0.0;
             if matches!(st.phase, ShiftPhase::Away | ShiftPhase::Back) {
                 st.pending = true;
             }
-        } else if st.phase == ShiftPhase::Hold {
-            // Count the required pause only after the hand has reached the knob.
-            st.hold_remaining = (st.hold_remaining - dt).max(0.0);
+        } else {
+            st.idle += dt;
         }
 
         // The driver's own push on the knob, for levers that do not move by themselves: it
@@ -1254,10 +1278,7 @@ impl DriverFigure {
             }
         }
 
-        // At a stop, rest one hand on the lever and keep the other on the wheel. Do not
-        // send the lever hand back merely because the wheel is turned or the other hand
-        // has to shuffle its grip.
-        let want = st.stopped || st.pending;
+        let want = (st.stopped && st.cool <= 0.0 && calm) || st.pending;
         // Set when the hand sets out for the knob this frame: whether for a shift.
         let mut start: Option<bool> = None;
         match st.phase {
@@ -1284,11 +1305,18 @@ impl DriverFigure {
                 st.w = (st.w + dt / st.reach).min(1.0);
                 if st.w >= 1.0 {
                     st.phase = ShiftPhase::Hold;
+                } else if busy && st.idle > 0.8 {
+                    st.phase = ShiftPhase::Back;
+                    st.cool = 1.5;
                 }
             }
             ShiftPhase::Hold => {
                 st.w = 1.0;
-                if !st.stopped && st.hold_remaining <= 0.0 && st.stroke >= 1.0 {
+                // Very brief hold: hand on knob for minimal time, then back to wheel
+                if busy && st.idle > 0.8 {
+                    st.phase = ShiftPhase::Back;
+                    st.cool = 1.5;
+                } else if !st.stopped && st.idle > HOLD_AFTER && st.stroke >= 1.0 {
                     st.phase = ShiftPhase::Back;
                 }
             }
@@ -1443,6 +1471,9 @@ fn lever_knob(positions: &[Vec3], pivot: Option<Vec3>) -> Option<(Vec3, Vec3)> {
 /// of a left-hand-drive driver and left of a right-hand-drive one).
 fn find_shifter(v: &VehicleInstance, hip: Vec3, heading: f32) -> Option<Shifter> {
     const STRONG: &[&str] = &[
+        "antrieb_shifter_posy",
+        "antrieb_shifter_posx",
+        "antrieb_shifter",
         "gearlever",
         "gear_lever",
         "gearshift",
@@ -1544,7 +1575,15 @@ fn find_shifter(v: &VehicleInstance, hip: Vec3, heading: f32) -> Option<Shifter>
         if (grab - shoulder).length() > LEVER_REACH {
             continue;
         }
-        let score = grade_of_mesh as f32 * 2.0 - dist;
+        let label = format!("{:?}", vm.file).to_ascii_lowercase();
+        let named_axes = ["antrieb_shifter_posx", "antrieb_shifter_posy"]
+            .iter()
+            .filter(|axis| vars.iter().any(|n| n.to_ascii_lowercase().contains(**axis)))
+            .count() as f32;
+        let named_mesh = ["antrieb_shifter_posx", "antrieb_shifter_posy", "antrieb_shifter"]
+            .iter()
+            .any(|name| label.contains(name));
+        let score = grade_of_mesh as f32 * 2.0 + named_axes + (if named_mesh { 1.0 } else { 0.0 }) - dist;
         if best.as_ref().map(|b| score > b.0).unwrap_or(true) {
             best = Some((score, i, vars, grab, axis));
         }
@@ -1623,11 +1662,15 @@ pub fn cached_type(path: &std::path::Path) -> Option<Arc<HumanType>> {
 /// road wheel turns by the steering angle itself, a steering wheel by 15-20 times it) that
 /// lies within arm's reach of the seat.
 fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
-    let mut best: Option<(f32, usize, Mat4, String, f32)> = None;
+    let mut best: Option<(bool, f32, usize, Mat4, String, f32)> = None;
     for (i, vm) in v.ty.meshes.iter().enumerate() {
         let def = &v.ty.model.meshes[vm.def_index];
+        let label = format!("{:?}", vm.file).to_ascii_lowercase();
+        let named_wheel = label.contains("cp_steering_wheel");
         for a in &def.animations {
-            if !a.variable.to_ascii_lowercase().starts_with("axle_steering")
+            let variable = a.variable.to_ascii_lowercase();
+            let named = named_wheel || variable.contains("cp_steering_wheel");
+            if !(variable.starts_with("axle_steering") || named)
                 || a.factor.abs() < 200.0
                 || a.kind != Some(omsi_model::AnimKind::Rot)
             {
@@ -1638,12 +1681,17 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
             if (c - hip).length() > 1.2 {
                 continue;
             }
-            if best.as_ref().map(|b| a.factor.abs() > b.0).unwrap_or(true) {
-                best = Some((a.factor.abs(), i, origin, a.variable.clone(), a.factor));
+            let factor = a.factor.abs();
+            let replace = best
+                .as_ref()
+                .map(|b| named > b.0 || (named == b.0 && factor > b.1))
+                .unwrap_or(true);
+            if replace {
+                best = Some((named, factor, i, origin, a.variable.clone(), a.factor));
             }
         }
     }
-    let (_, mesh, origin, var, factor) = best?;
+    let (_, _, mesh, origin, var, factor) = best?;
     let origin_point = origin.transform_point3(Vec3::ZERO);
     let centre = origin_point;
     let mut axis = origin.transform_vector3(Vec3::X).normalize_or_zero();
